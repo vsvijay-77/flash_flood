@@ -189,50 +189,61 @@ export default function AppLayout() {
               <Menu className="size-5" />
             </Button>
 
-            <nav className="hidden min-w-0 items-center gap-2 text-sm sm:flex" data-testid="header-breadcrumb">
+            <nav className="hidden shrink-0 items-center gap-2 text-sm sm:flex" data-testid="header-breadcrumb">
               <Link to="/dashboard" className="text-slate-500 hover:text-[#0F4C81]">Platform</Link>
               <span className="text-slate-300">/</span>
               <span className="truncate font-semibold text-slate-900">{crumbLabel}</span>
             </nav>
 
-            <div className="relative ml-auto hidden max-w-xs flex-1 md:block">
+            {/* Search owns the flexible middle column; the control cluster below is pushed
+                right by ml-auto. Only one element in this row may claim ml-auto, otherwise
+                the search box drifts against the hazard badge at some breakpoints. */}
+            <div className="relative mx-4 hidden w-full max-w-sm flex-1 md:block">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search sensors, zones, alerts…" className="pl-9" data-testid="header-search-input" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search sensors, zones, alerts…"
+                className="h-9 w-full pl-9"
+                data-testid="header-search-input"
+              />
             </div>
 
-            <span className="ml-auto hidden rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 font-mono text-[10px] font-bold tracking-wider text-amber-800 md:ml-0 md:inline" data-testid="header-hazard-level">
-              NATIONAL HAZARD: {stats?.national_hazard_level ?? "—"}
-            </span>
+            <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2" data-testid="header-controls">
+              <span className="hidden rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 font-mono text-[10px] font-bold tracking-wider text-amber-800 lg:inline" data-testid="header-hazard-level">
+                NATIONAL HAZARD: {stats?.national_hazard_level ?? "—"}
+              </span>
 
-            <NotificationMenu />
+              <NotificationMenu />
 
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button variant="ghost" size="sm" className="gap-2" data-testid="user-profile-menu-btn">
-                    <span className="grid size-7 place-items-center rounded-full bg-[#0F4C81] font-mono text-[11px] font-bold text-white">
-                      {(user?.first_name?.[0] ?? "?") + (user?.last_name?.[0] ?? "")}
-                    </span>
-                    <span className="hidden text-left leading-tight sm:block">
-                      <span className="block text-xs font-semibold text-slate-900">{user ? `${user.first_name} ${user.last_name}` : "Officer"}</span>
-                      <span className="block text-[10px] uppercase tracking-wider text-slate-500">{ROLE_LABELS[role]}</span>
-                    </span>
-                  </Button>
-                }
-              />
-              <DropdownMenuContent align="end" className="w-56" data-testid="user-profile-menu">
-                <DropdownMenuItem onClick={() => navigate("/profile")} data-testid="menu-profile-link">
-                  <UserIcon className="mr-2 size-4" /> My Profile
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => navigate("/settings")} data-testid="menu-settings-link">
-                  <Settings className="mr-2 size-4" /> Settings
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onClick={logout} data-testid="menu-logout-btn">
-                  <LogOut className="mr-2 size-4" /> Sign Out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button variant="ghost" size="sm" className="gap-2" data-testid="user-profile-menu-btn">
+                      <span className="grid size-7 place-items-center rounded-full bg-[#0F4C81] font-mono text-[11px] font-bold text-white">
+                        {(user?.first_name?.[0] ?? "?") + (user?.last_name?.[0] ?? "")}
+                      </span>
+                      <span className="hidden text-left leading-tight sm:block">
+                        <span className="block text-xs font-semibold text-slate-900">{user ? `${user.first_name} ${user.last_name}` : "Officer"}</span>
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500">{ROLE_LABELS[role]}</span>
+                      </span>
+                    </Button>
+                  }
+                />
+                <DropdownMenuContent align="end" className="w-56" data-testid="user-profile-menu">
+                  <DropdownMenuItem onClick={() => navigate("/profile")} data-testid="menu-profile-link">
+                    <UserIcon className="mr-2 size-4" /> My Profile
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => navigate("/settings")} data-testid="menu-settings-link">
+                    <Settings className="mr-2 size-4" /> Settings
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem variant="destructive" onClick={logout} data-testid="menu-logout-btn">
+                    <LogOut className="mr-2 size-4" /> Sign Out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         </header>
 
