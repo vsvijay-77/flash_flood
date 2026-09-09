@@ -1582,26 +1582,92 @@ export function CesiumDigitalTwinViewer({
     maskEntitiesRef.current = [];
 
     if (!polyCoords || polyCoords.length < 3) {
-      // No polygon — show full globe
+      // No polygon — show full globe without any clip
       try { viewer.scene.globe.cartographicLimitRectangle = Cesium.Rectangle.MAX_VALUE; } catch (e) {}
       return;
     }
 
-    // Compute bbox from polygon [lat, lng] pairs with small padding
+    // Compute tight bbox from polygon [lat, lng] pairs — no padding so the clip is exact
     const lats = polyCoords.map(([la]) => la);
     const lngs = polyCoords.map(([, lo]) => lo);
-    const pad = 0.05; // ~5km padding so area edges are visible
-    const west  = Math.min(...lngs) - pad;
-    const east  = Math.max(...lngs) + pad;
-    const south = Math.min(...lats) - pad;
-    const north = Math.max(...lats) + pad;
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs);
+    const maxLng = Math.max(...lngs);
+    // Tiny padding (0.002° ≈ 220m) so the boundary edge isn't clipped
+    const pad = 0.002;
 
-    // Use Cesium's built-in globe limit — crisp rectangular clip, zero terrain artifacts
+    // 1. Clip satellite imagery/terrain to tight bbox around selected area
     try {
       viewer.scene.globe.cartographicLimitRectangle = Cesium.Rectangle.fromDegrees(
-        west, south, east, north
+        minLng - pad, minLat - pad, maxLng + pad, maxLat + pad
       );
     } catch (e) {}
+
+    // 2. Dark overlay: a world-spanning polygon with a hole at the selected area.
+    //    Everything outside the polygon hole appears as a very dark semi-transparent
+    //    layer, focusing attention exclusively on the selected area.
+
+    // Outer ring — covers the whole world (slightly beyond ±90/±180 to avoid edge gaps)
+    const worldRing = [
+      -180, -90,
+      180, -90,
+      180,  90,
+      -180,  90,
+      -180, -90,
+    ];
+
+    // Inner hole — the selected polygon in [lng, lat] order (Cesium expects this)
+    // Close the ring if not already closed
+    const holePositions: number[] = [];
+    polyCoords.forEach(([lat, lng]) => {
+      holePositions.push(lng, lat);
+    });
+    // Close the ring
+    if (holePositions[0] !== holePositions[holePositions.length - 2] ||
+        holePositions[1] !== holePositions[holePositions.length - 1]) {
+      holePositions.push(holePositions[0], holePositions[1]);
+    }
+
+    try {
+      const maskEnt = viewer.entities.add({
+        polygon: {
+          hierarchy: new Cesium.PolygonHierarchy(
+            Cesium.Cartesian3.fromDegreesArray(worldRing),
+            [
+              new Cesium.PolygonHierarchy(
+                Cesium.Cartesian3.fromDegreesArray(holePositions)
+              ),
+            ]
+          ),
+          material: Cesium.Color.fromCssColorString("#000000").withAlpha(0.72),
+          classificationType: Cesium.ClassificationType.BOTH,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          outline: false,
+          // Render above all other entities
+          zIndex: 9999,
+        },
+      });
+      maskEntitiesRef.current.push(maskEnt);
+
+      // 3. Thin bright border around the selected area to define the edge clearly
+      const borderEnt = viewer.entities.add({
+        polyline: {
+          positions: Cesium.Cartesian3.fromDegreesArray(holePositions),
+          width: 2.5,
+          material: new Cesium.PolylineOutlineMaterialProperty({
+            color: Cesium.Color.fromCssColorString("#60a5fa").withAlpha(0.9),
+            outlineColor: Cesium.Color.fromCssColorString("#1e3a5f").withAlpha(0.7),
+            outlineWidth: 1,
+          }),
+          clampToGround: true,
+          zIndex: 10000,
+        },
+      });
+      maskEntitiesRef.current.push(borderEnt);
+    } catch (e) {
+      console.warn("[DT] Mask overlay error:", e);
+    }
   };
 
   // Initialize Viewer with Mouse Controls for Up/Down & WASD Movement
