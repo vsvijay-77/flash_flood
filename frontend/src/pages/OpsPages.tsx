@@ -1,30 +1,37 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useLocation, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Brain, Download, FileText, Info, Play } from "lucide-react";
+import { Brain, Download, FileText, Info, Play, Sparkles, Box, Boxes, RefreshCw, CheckCircle2, ArrowRight, Layers, Globe, Map, MapPin, AlertTriangle, Square, CloudRain, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EmptyState, LoadingRows, PageHeader, RiskIndicator, SectionCard, StatCard, StatusPill } from "@/components/Primitives";
+import { EmptyState, LoadingRows, LoadingSymbol, PageHeader, RiskIndicator, SectionCard, StatCard, StatusPill } from "@/components/Primitives";
 import { apiDelete, apiGet, apiPatch, apiPost } from "@/lib/api";
 import { apiErrorMessage, useSession } from "@/lib/session";
-import { HAZARD_LABELS, ROLE_LABELS, SENSOR_LABELS, type Alert, type Report, type RiskAssessment, type Role, type Sensor, type SimulationResult, type User, type Zone } from "@/lib/types";
+import { HAZARD_LABELS, ROLE_LABELS, SENSOR_LABELS, type Alert, type Report, type RiskAssessment, type Role, type Sensor, type SimulationResult, type User, type Zone, type CustomArea } from "@/lib/types";
+import { CesiumDigitalTwinViewer } from "@/components/gis/CesiumDigitalTwinViewer";
+import GISMap, { DEFAULT_LAYERS } from "@/components/gis/GISMap";
+import { supabase } from "@/lib/supabase";
+import { parseCustomAreaPolygon } from "@/lib/gisUtils";
+import DisasterIntelligenceChat from "@/components/gis/DisasterIntelligenceChat";
+
 
 const useZones = () => useQuery({ queryKey: ["zones"], queryFn: () => apiGet<Zone[]>("/zones"), retry: false });
 
 const SCENARIOS = [
   { value: "flood", label: "Flood Simulation" },
   { value: "landslide", label: "Landslide Simulation" },
-  { value: "forest_fire", label: "Forest Fire Spread" },
   { value: "evacuation", label: "Evacuation Route Simulation" },
 ];
 const SCENARIO_LABELS: Record<string, string> = Object.fromEntries(SCENARIOS.map((s) => [s.value, s.label]));
 
 export function DigitalTwinPage() {
+  const location = useLocation();
   const zones = useZones();
   const [zoneId, setZoneId] = useState("");
   const [scenario, setScenario] = useState("flood");
@@ -33,6 +40,115 @@ export function DigitalTwinPage() {
   const [slope, setSlope] = useState(32);
   const [wind, setWind] = useState(18);
   const [result, setResult] = useState<SimulationResult | null>(null);
+  const [isRainActive, setIsRainActive] = useState<boolean>(false);
+
+  // 3D Digital Twin State (Cesium 3D Engine)
+  const [loadingAreas, setLoadingAreas] = useState<boolean>(() => {
+    try {
+      return !localStorage.getItem("cached_custom_areas");
+    } catch {
+      return true;
+    }
+  });
+  const [customAreas, setCustomAreas] = useState<CustomArea[]>(() => {
+    try {
+      const cached = localStorage.getItem("cached_custom_areas");
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) {
+          return parsed.map((d: any) => ({
+            ...d,
+            polygon: d.polygon || parseCustomAreaPolygon(d.shape, Number(d.lat), Number(d.lng)),
+          }));
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to parse cached custom areas", e);
+    }
+    return [];
+  });
+  const [selectedAreaId, setSelectedAreaId] = useState<string>(location.state?.area?.id || "");
+  const [activeArea, setActiveArea] = useState<CustomArea | null>(location.state?.area || null);
+  const [twinViewMode, setTwinViewMode] = useState<"3d" | "gis">("3d");
+
+  const [lat, setLat] = useState<number>(
+    location.state?.latitude ?? (location.state?.area?.lat ? Number(location.state.area.lat) : 0)
+  );
+  const [lng, setLng] = useState<number>(
+    location.state?.longitude ?? (location.state?.area?.lng ? Number(location.state.area.lng) : 0)
+  );
+  const [areaTitle, setAreaTitle] = useState<string>(
+    location.state?.area?.name || location.state?.name || ""
+  );
+
+  // Fetch monitored areas from Supabase
+  useEffect(() => {
+    supabase
+      .from("custom_areas")
+      .select("*")
+      .then(({ data }) => {
+        setLoadingAreas(false);
+        if (data && data.length > 0) {
+          const loaded: CustomArea[] = data.map((d: any) => ({
+            id: d.id,
+            name: d.name,
+            district: d.district,
+            type: d.area_type || "Forest",
+            risk: d.risk_category || "Medium",
+            priority: d.priority || "Normal",
+            description: d.description || "",
+            date: new Date(d.created_at).toLocaleDateString(),
+            lat: Number(d.lat),
+            lng: Number(d.lng),
+            shape: d.shape || "Polygon",
+            polygon: parseCustomAreaPolygon(d.shape, Number(d.lat), Number(d.lng)),
+            areaSqMeters: 0,
+          }));
+          setCustomAreas(loaded);
+          try {
+            localStorage.setItem("cached_custom_areas", JSON.stringify(loaded));
+          } catch (e) {
+            console.warn("Failed to persist custom areas to localStorage", e);
+          }
+        }
+      },
+      () => {
+        setLoadingAreas(false);
+      });
+  }, []);
+
+  // Sync state from location navigation
+  useEffect(() => {
+    if (location.state?.area) {
+      setActiveArea(location.state.area);
+      setSelectedAreaId(location.state.area.id);
+      setLat(Number(location.state.area.lat));
+      setLng(Number(location.state.area.lng));
+      setAreaTitle(location.state.area.name);
+    } else if (location.state?.latitude && location.state?.longitude) {
+      setLat(Number(location.state.latitude));
+      setLng(Number(location.state.longitude));
+      if (location.state.name) setAreaTitle(location.state.name);
+    }
+  }, [location.state]);
+
+  const handleAreaChange = (id: string) => {
+    if (!id) {
+      setSelectedAreaId("");
+      setActiveArea(null);
+      setAreaTitle("");
+      return;
+    }
+    setSelectedAreaId(id);
+    const chosen = customAreas.find((a) => a.id === id);
+    if (chosen) {
+      setActiveArea(chosen);
+      setLat(Number(chosen.lat));
+      setLng(Number(chosen.lng));
+      setAreaTitle(chosen.name);
+      toast.success(`Loaded 3D Digital Twin for ${chosen.name}`);
+    }
+  };
 
   const zoneList = zones.data ?? [];
   const effectiveZone = zoneId || zoneList[0]?.id || "";
@@ -73,46 +189,411 @@ export function DigitalTwinPage() {
   );
 
   return (
-    <div data-testid="digital-twin-page">
-      <PageHeader title="Digital Twin" description="Simulate hazard propagation and evacuation windows over a terrain twin of the selected zone." />
-      <div className="grid gap-6 lg:grid-cols-[340px_1fr]">
-        <Card className="border-slate-200/80 p-6" data-testid="digital-twin-controls">
-          <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">Simulation Controls</p>
-          <div className="mt-4 space-y-5">
-            <div>
-              <Label>Monitoring Zone</Label>
-              <Select value={effectiveZone} onValueChange={(v: string) => setZoneId(v)}>
-                <SelectTrigger className="mt-1.5 w-full" data-testid="twin-zone-trigger">
-                  <SelectValue placeholder="Select zone">{(v) => zoneList.find((z) => z.id === v)?.name ?? "Select zone"}</SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {zoneList.map((z) => (
-                    <SelectItem key={z.id} value={z.id} data-testid={`twin-zone-${z.id}`}>{z.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label>Scenario</Label>
-              <Select value={scenario} onValueChange={(v: string) => setScenario(v)}>
-                <SelectTrigger className="mt-1.5 w-full" data-testid="twin-scenario-trigger">
-                  <SelectValue>{(v) => SCENARIO_LABELS[v as string] ?? "Select scenario"}</SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {SCENARIOS.map((s) => (
-                    <SelectItem key={s.value} value={s.value} data-testid={`twin-scenario-${s.value}`}>{s.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {slider("Rainfall intensity", rainfall, setRainfall, 10, 150, "mm/h", "twin-rainfall-slider")}
-            {slider("Soil saturation", saturation, setSaturation, 0, 100, "%", "twin-saturation-slider")}
-            {slider("Slope angle", slope, setSlope, 0, 70, "°", "twin-slope-slider")}
-            {slider("Wind speed", wind, setWind, 0, 150, "km/h", "twin-wind-slider")}
+    <div data-testid="digital-twin-page" className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <PageHeader
+          title="3D Satellite Terrain Twin"
+          description="High-resolution 3D Satellite Terrain View with real-time hazard simulation telemetry."
+        />
+        <div className="flex items-center gap-2 shrink-0">
+          <Link
+            to="/gis"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 bg-white hover:bg-slate-50 text-xs font-semibold shadow-xs"
+          >
+            ← Select Area on GIS Map
+          </Link>
+        </div>
+      </div>
 
-            <Button size="lg" className="w-full" disabled={run.isPending || !effectiveZone} onClick={() => run.mutate()} data-testid="run-simulation-btn">
-              {run.isPending ? "Running simulation…" : <><Play className="mr-2 size-4" /> RUN SIMULATION</>}
-            </Button>
+      {/* ─── 3D Basin Digital Twin Viewport ─── */}
+      {!activeArea ? (
+        <Card
+          data-testid="no-area-selected-card"
+          className="border-2 border-dashed border-slate-300 dark:border-slate-700 bg-gradient-to-b from-slate-50/80 via-white to-slate-50/50 dark:from-slate-900/50 dark:via-slate-900/20 dark:to-slate-900/40 p-8 sm:p-14 text-center flex flex-col items-center justify-center min-h-[520px] rounded-2xl shadow-xs"
+        >
+          <div className="relative mb-5">
+            <div className="size-20 rounded-2xl bg-gradient-to-br from-[#0F4C81]/15 via-teal-500/15 to-emerald-500/20 border border-[#0F4C81]/20 flex items-center justify-center shadow-md">
+              <Boxes className="size-10 text-[#0F4C81]" />
+            </div>
+            <span className="absolute -bottom-1 -right-1 flex size-6 rounded-full bg-amber-100 border-2 border-white items-center justify-center shadow-xs">
+              <MapPin className="size-3.5 text-amber-600" />
+            </span>
+          </div>
+
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold mb-3">
+            <AlertTriangle className="size-3.5 text-amber-600" />
+            <span>No Area Selected</span>
+          </div>
+
+          <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-slate-800 dark:text-slate-100 tracking-tight max-w-xl">
+            Select an area in GIS mapping to create a digital twin
+          </h2>
+
+          <p className="mt-3 text-sm text-slate-600 dark:text-slate-400 max-w-lg leading-relaxed">
+            To view the interactive 3D terrain mesh, hazard simulations, and localized sensor mesh telemetry, please select or draw an area in GIS mapping first.
+          </p>
+
+          <div className="mt-7 flex flex-col sm:flex-row items-center gap-3">
+            <Link
+              to="/gis"
+              data-testid="goto-gis-mapping-btn"
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-700 hover:from-emerald-700 hover:to-cyan-800 text-white text-sm font-bold shadow-md hover:shadow-lg hover:scale-[1.01] active:scale-[0.99] transition-all cursor-pointer"
+            >
+              <Map className="size-4" />
+              <span>Select an Area in GIS Mapping</span>
+              <ArrowRight className="size-4" />
+            </Link>
+          </div>
+
+          {loadingAreas && customAreas.length === 0 ? (
+            <div className="mt-8 pt-6 border-t border-slate-200 dark:border-slate-800 w-full max-w-md flex justify-center">
+              <LoadingSymbol size="sm" label="Loading monitored areas..." />
+            </div>
+          ) : customAreas.length > 0 ? (
+            <div className="mt-8 pt-6 border-t border-slate-200 dark:border-slate-800 w-full max-w-md">
+              <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2.5">
+                Or choose from previously saved areas
+              </p>
+              <Select value={selectedAreaId} onValueChange={handleAreaChange}>
+                <SelectTrigger className="w-full text-xs">
+                  <SelectValue placeholder="Choose a monitored area to load 3D Twin..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {customAreas.map((a) => (
+                    <SelectItem key={a.id} value={a.id} className="text-xs">
+                      {a.name} ({a.district}) — {a.risk} Risk
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+        </Card>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
+            <div className="flex items-center gap-3">
+              <span className="flex size-2 rounded-full bg-emerald-500 animate-pulse" />
+              {/* View Mode Toggle: 3D Twin vs GIS Map */}
+              <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-300 dark:border-slate-700 shadow-xs">
+                <button
+                  type="button"
+                  onClick={() => setTwinViewMode("3d")}
+                  className={`px-3 py-1 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    twinViewMode === "3d"
+                      ? "bg-[#0F4C81] text-white shadow-xs"
+                      : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                  }`}
+                >
+                  <Boxes className="size-3.5" />
+                  <span>3D Digital Twin</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTwinViewMode("gis")}
+                  className={`px-3 py-1 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    twinViewMode === "gis"
+                      ? "bg-[#0F4C81] text-white shadow-xs"
+                      : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                  }`}
+                >
+                  <Map className="size-3.5" />
+                  <span>Area in GIS Map</span>
+                </button>
+              </div>
+
+              {(isRainActive || run.isPending || !!result) && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-600 dark:text-blue-400 text-xs font-bold animate-pulse">
+                  <CloudRain className="size-3.5" />
+                  <span>Rain Simulation Active</span>
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3 text-xs text-slate-500 font-mono">
+              <span className="font-bold text-slate-700">{areaTitle}</span>
+              <span>Lat: <strong className="text-slate-800">{lat.toFixed(4)}°N</strong></span>
+              <span>Lng: <strong className="text-slate-800">{lng.toFixed(4)}°E</strong></span>
+              <Link
+                to="/gis"
+                state={{ area: activeArea }}
+                className="text-xs text-sky-600 hover:underline font-sans flex items-center gap-0.5 font-semibold"
+                title="Open this area in Full GIS Mapping Page"
+              >
+                <span>Full GIS Page</span>
+                <ArrowRight className="size-3" />
+              </Link>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveArea(null);
+                  setSelectedAreaId("");
+                  setAreaTitle("");
+                }}
+                className="text-xs text-slate-500 hover:text-slate-700 underline font-sans ml-2 cursor-pointer"
+                title="Deselect area"
+              >
+                Change Area
+              </button>
+              {activeArea && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!activeArea) return;
+                    if (!window.confirm(`Delete monitored area "${activeArea.name}" and all its saved data permanently from database?`)) return;
+
+                    try {
+                      await supabase.from("custom_areas").delete().eq("id", activeArea.id);
+                      const safeName = activeArea.name.replace(/\s+/g, "_");
+                      localStorage.removeItem(`dt_mesh_nodes_${safeName}`);
+                      localStorage.removeItem(`dt_user_activity_${safeName}`);
+                      localStorage.removeItem(`dt_networks_${safeName}`);
+
+                      const filtered = customAreas.filter((a) => a.id !== activeArea.id);
+                      setCustomAreas(filtered);
+                      setActiveArea(null);
+                      setSelectedAreaId("");
+                      setAreaTitle("");
+                      toast.success(`Monitored Area "${activeArea.name}" deleted from database.`);
+                    } catch (err) {
+                      toast.error("Failed to delete area from database");
+                    }
+                  }}
+                  className="text-xs text-rose-600 hover:text-rose-700 font-sans ml-3 font-bold flex items-center gap-1 cursor-pointer hover:underline"
+                  title="Permanently delete this GIS Monitored Area from database"
+                >
+                  <Trash2 className="size-3 text-rose-600" />
+                  <span>Delete Area</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {twinViewMode === "3d" ? (
+            <CesiumDigitalTwinViewer
+              key={`3d-${lat.toFixed(4)}-${lng.toFixed(4)}-${areaTitle}`}
+              latitude={lat}
+              longitude={lng}
+              areaName={areaTitle}
+              polygon={activeArea?.polygon}
+              height="620px"
+              onViewInGIS={() => setTwinViewMode("gis")}
+              isRaining={isRainActive || run.isPending || !!result}
+              rainfallIntensity={rainfall}
+              windSpeed={wind}
+              onToggleRain={(val) => setIsRainActive(val)}
+            />
+          ) : (
+            <div className="h-[620px] rounded-xl overflow-hidden border border-slate-300 shadow-md">
+              <GISMap
+                key={`gis-${lat.toFixed(4)}-${lng.toFixed(4)}-${areaTitle}`}
+                customAreas={customAreas}
+                selectedArea={activeArea}
+                focusedArea={activeArea}
+                rainActive={isRainActive}
+                rainfallIntensity={rainfall}
+                onToggleRain={(val) => setIsRainActive(val)}
+                onSelectArea={(area) => {
+                  if (area) {
+                    setActiveArea(area);
+                    setSelectedAreaId(area.id);
+                    setAreaTitle(area.name);
+                  }
+                }}
+                onAreaCreated={(newArea) => {
+                  setCustomAreas((prev) => [newArea, ...prev]);
+                  setActiveArea(newArea);
+                  setSelectedAreaId(newArea.id);
+                  setAreaTitle(newArea.name);
+                }}
+                layers={{
+                  customAreas: true,
+                  satellite: true,
+                  areaLabels: true,
+                  boundaries: true,
+                  rainSimulation: isRainActive,
+                }}
+                height="620px"
+                testId="twin-gis-map"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ─── Disaster Intelligence Chat ─── */}
+      <DisasterIntelligenceChat
+        latitude={activeArea ? lat : undefined}
+        longitude={activeArea ? lng : undefined}
+        areaName={areaTitle || undefined}
+        radiusKm={20}
+      />
+
+      {/* ─── Simulation Controls & Twin Projection Grid ─── */}
+      <div className="grid gap-6 lg:grid-cols-[340px_1fr]">
+        <Card className="border-slate-200/80 p-6 space-y-6" data-testid="digital-twin-controls">
+          {/* Quick 3D Twin Trigger Section */}
+          <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#0F4C81]">
+                3D Monitored Area
+              </p>
+              {activeArea ? (
+                <span className="text-[10px] text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                  Active 3D
+                </span>
+              ) : (
+                <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                  No Area Selected
+                </span>
+              )}
+            </div>
+
+            {!activeArea && (
+              <div className="p-2.5 rounded-lg bg-amber-50/90 border border-amber-200 text-xs text-amber-900 space-y-1.5">
+                <p className="font-semibold text-amber-900 text-[11px]">
+                  Select an area in GIS mapping to create a digital twin
+                </p>
+                <Link
+                  to="/gis"
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-[#0F4C81] hover:underline"
+                >
+                  <MapPin className="size-3 text-[#0F4C81]" />
+                  Open GIS Mapping →
+                </Link>
+              </div>
+            )}
+
+            {customAreas.length > 0 ? (
+              <div>
+                <Label className="text-xs text-slate-600">Select Monitored Area</Label>
+                <Select
+                  value={selectedAreaId || activeArea?.id || ""}
+                  onValueChange={handleAreaChange}
+                >
+                  <SelectTrigger className="mt-1 w-full text-xs">
+                    <SelectValue placeholder="Select an area...">
+                      {customAreas.find((a) => a.id === (selectedAreaId || activeArea?.id))?.name || "Choose Area"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {customAreas.map((a) => (
+                      <SelectItem key={a.id} value={a.id} className="text-xs">
+                        {a.name} ({a.district})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500">Loading custom areas from database…</p>
+            )}
+
+            {/* Target Coordinates */}
+            <div className="pt-2 border-t border-slate-200/80 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-slate-600">Target Coordinates</span>
+                <span className="text-[10px] text-slate-400 font-mono">WGS84</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <span className="text-[10px] text-slate-500 font-medium">Latitude</span>
+                  <Input
+                    type="number"
+                    step="0.0001"
+                    value={lat}
+                    onChange={(e) => setLat(parseFloat(e.target.value) || 0)}
+                    className="h-8 text-xs font-mono mt-0.5"
+                  />
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-500 font-medium">Longitude</span>
+                  <Input
+                    type="number"
+                    step="0.0001"
+                    value={lng}
+                    onChange={(e) => setLng(parseFloat(e.target.value) || 0)}
+                    className="h-8 text-xs font-mono mt-0.5"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">Simulation Controls</p>
+            <div className="mt-4 space-y-5">
+              <div>
+                <Label>Monitoring Zone</Label>
+                <Select value={effectiveZone} onValueChange={(v: string) => setZoneId(v)}>
+                  <SelectTrigger className="mt-1.5 w-full" data-testid="twin-zone-trigger">
+                    <SelectValue placeholder="Select zone">{(v) => zoneList.find((z) => z.id === v)?.name ?? "Select zone"}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {zoneList.map((z) => (
+                      <SelectItem key={z.id} value={z.id} data-testid={`twin-zone-${z.id}`}>{z.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Scenario</Label>
+                <Select value={scenario} onValueChange={(v: string) => setScenario(v)}>
+                  <SelectTrigger className="mt-1.5 w-full" data-testid="twin-scenario-trigger">
+                    <SelectValue>{(v) => SCENARIO_LABELS[v as string] ?? "Select scenario"}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SCENARIOS.map((s) => (
+                      <SelectItem key={s.value} value={s.value} data-testid={`twin-scenario-${s.value}`}>{s.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {slider("Rainfall intensity", rainfall, setRainfall, 10, 150, "mm/h", "twin-rainfall-slider")}
+              {slider("Soil saturation", saturation, setSaturation, 0, 100, "%", "twin-saturation-slider")}
+              {slider("Slope angle", slope, setSlope, 0, 70, "°", "twin-slope-slider")}
+              {slider("Wind speed", wind, setWind, 0, 150, "km/h", "twin-wind-slider")}
+
+              <div className="space-y-2">
+                <Button
+                  size="lg"
+                  className="w-full cursor-pointer bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white font-bold shadow-md transition-all"
+                  disabled={run.isPending || !effectiveZone || !activeArea}
+                  onClick={() => {
+                    setIsRainActive(true);
+                    run.mutate();
+                  }}
+                  data-testid="run-simulation-btn"
+                >
+                  {run.isPending ? (
+                    "Running simulation…"
+                  ) : !activeArea ? (
+                    "Select an area in GIS to simulate"
+                  ) : (
+                    <>
+                      <Play className="mr-2 size-4" /> {result ? "RE-RUN SIMULATION" : "RUN SIMULATION"}
+                    </>
+                  )}
+                </Button>
+
+                {(isRainActive || run.isPending || result) && (
+                  <Button
+                    size="lg"
+                    variant="destructive"
+                    className="w-full cursor-pointer bg-red-600 hover:bg-red-700 active:bg-red-800 text-white font-bold shadow-md transition-all"
+                    onClick={() => {
+                      setIsRainActive(false);
+                      run.reset();
+                      setResult(null);
+                      toast.info("Simulation and weather dynamics stopped.");
+                    }}
+                    data-testid="stop-simulation-btn"
+                  >
+                    <Square className="mr-2 size-4 fill-current" /> STOP SIMULATION
+                  </Button>
+                )}
+              </div>
+            </div>
           </div>
         </Card>
 
@@ -124,8 +605,18 @@ export function DigitalTwinPage() {
               </div>
               <p className="mt-3 text-sm text-slate-600">Solving terrain hydrology and propagation kernels…</p>
             </div>
+          ) : !activeArea ? (
+            <EmptyState
+              testId="simulation-empty"
+              title="Select an area in GIS mapping"
+              description="Select an area in GIS mapping to create a digital twin and view simulation projections."
+            />
           ) : !result ? (
-            <EmptyState testId="simulation-empty" title="No simulation run yet" description="Configure the parameters and run a simulation to project hazard propagation." />
+            <EmptyState
+              testId="simulation-empty"
+              title="No simulation run yet"
+              description="Configure the parameters and run a simulation to project hazard propagation."
+            />
           ) : (
             <div data-testid="simulation-result">
               <div className="grid gap-4 sm:grid-cols-4">

@@ -15,14 +15,30 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
-from lib.db import client, db
+from lib.db import db
 
 
 # Startup runs before the yield, shutdown after it. Add your own setup/teardown here.
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Pre-warm GEE tile cache in a background daemon thread on startup.
+    # Daemon thread ensures Uvicorn reload / shutdown is never blocked.
+    def _warm_gee_target():
+        if os.environ.get("ENABLE_GEE_PREWARM", "false").lower() != "true":
+            return
+        try:
+            from routers.gee import _LAYER_BUILDERS, _ensure_gee
+            from concurrent.futures import ThreadPoolExecutor
+            _ensure_gee()
+            with ThreadPoolExecutor(max_workers=min(len(_LAYER_BUILDERS), 4)) as executor:
+                list(executor.map(lambda fn: fn(), _LAYER_BUILDERS.values()))
+            logger.info("GEE tile cache pre-warmed for all layers in parallel.")
+        except Exception as exc:
+            logger.warning(f"GEE cache pre-warm failed (non-fatal): {exc}")
+
+    import threading
+    threading.Thread(target=_warm_gee_target, daemon=True).start()
     yield
-    client.close()
 
 
 # Create the main app without a prefix
@@ -64,12 +80,21 @@ from routers.alerts import router as alerts_router  # noqa: E402
 from routers.auth import router as auth_router  # noqa: E402
 from routers.intelligence import router as intelligence_router  # noqa: E402
 from routers.network import router as network_router  # noqa: E402
+from routers.satellite import router as satellite_router  # noqa: E402
+
+from routers.gee import router as gee_router  # noqa: E402
+from routers.digital_twin import router as digital_twin_router  # noqa: E402
+from routers.routing_and_rivers import router as routing_and_rivers_router  # noqa: E402
 
 api_router.include_router(auth_router)
 api_router.include_router(network_router)
 api_router.include_router(alerts_router)
 api_router.include_router(intelligence_router)
 api_router.include_router(admin_router)
+api_router.include_router(satellite_router)
+api_router.include_router(gee_router)
+api_router.include_router(digital_twin_router)
+api_router.include_router(routing_and_rivers_router)
 
 # Include the router in the main app
 app.include_router(api_router)

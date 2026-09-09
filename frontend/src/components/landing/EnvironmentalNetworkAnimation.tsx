@@ -1,213 +1,428 @@
-import { useState } from "react";
-import { CloudRain, Droplets, Thermometer, Waves, Flame, Wind, Mountain, RadioTower } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import {
+  CloudRain, Droplets, Thermometer, Waves, Wind, Mountain,
+  Antenna, Server, ZoomIn, ZoomOut, Maximize, Minimize, Activity, 
+  Battery, ShieldAlert, Network, Zap, Sun
+} from "lucide-react";
+import { cn } from "@/lib/utils";
 
-interface NodeSpec {
+type ViewMode = "network" | "health" | "battery" | "sensor";
+type Status = "healthy" | "warning" | "critical" | "offline";
+
+interface MasterNodeSpec {
   id: string;
   label: string;
   x: number;
   y: number;
-  reading: string;
-  icon: typeof CloudRain;
-  alert?: boolean;
+  status: Status;
 }
 
-const GATEWAY = { x: 400, y: 132 };
+interface NodeSpec {
+  id: string;
+  masterId: string;
+  label: string;
+  type: string;
+  x: number;
+  y: number;
+  readings: { label: string; value: string }[];
+  status: Status;
+  battery: number;
+  solar?: boolean;
+  signal: number;
+  icon: any;
+  alertType?: string;
+  riskLevel?: string;
+}
+
+const GATEWAY = { x: 400, y: 110 };
+
+const MASTER_NODES: MasterNodeSpec[] = [
+  { id: "m1", label: "Edge Node", x: 200, y: 220, status: "healthy" },
+  { id: "m2", label: "Edge Node", x: 580, y: 260, status: "warning" },
+  { id: "m3", label: "Edge Node", x: 380, y: 340, status: "healthy" },
+];
 
 const NODES: NodeSpec[] = [
-  { id: "rainfall", label: "Rainfall Sensor", x: 118, y: 238, reading: "68 mm/h", icon: CloudRain, alert: true },
-  { id: "soil", label: "Soil Moisture Sensor", x: 214, y: 306, reading: "81 %", icon: Droplets, alert: true },
-  { id: "temp", label: "Temperature Sensor", x: 96, y: 356, reading: "19.4 °C", icon: Thermometer },
-  { id: "water", label: "Water Level Sensor", x: 318, y: 392, reading: "4.6 m", icon: Waves, alert: true },
-  { id: "smoke", label: "Smoke / Fire Sensor", x: 566, y: 262, reading: "12 ppm", icon: Flame },
-  { id: "air", label: "Air Quality Sensor", x: 676, y: 330, reading: "148 AQI", icon: Wind },
-  { id: "tilt", label: "Tilt / Landslide Sensor", x: 486, y: 344, reading: "3.2°", icon: Mountain },
-  { id: "tilt2", label: "Seismic Tilt Node", x: 640, y: 412, reading: "0.8°", icon: Mountain },
+  { 
+    id: "n1", masterId: "m1", label: "ENV-IND-001", type: "Accelerometer", x: 80, y: 300, 
+    readings: [{ label: "X", value: "0.12 g" }, { label: "Y", value: "0.08 g" }, { label: "Z", value: "9.81 g" }],
+    status: "healthy", battery: 87, solar: true, signal: -72, icon: Activity 
+  },
+  { 
+    id: "n2", masterId: "m1", label: "ENV-IND-002", type: "Rain Sensor", x: 150, y: 350, 
+    readings: [{ label: "Rate", value: "12 mm/h" }, { label: "24h Total", value: "45 mm" }],
+    status: "healthy", battery: 92, signal: -68, icon: CloudRain 
+  },
+  { 
+    id: "n3", masterId: "m1", label: "ENV-IND-003", type: "Temperature", x: 260, y: 280, 
+    readings: [{ label: "Temp", value: "24.2 °C" }, { label: "Humidity", value: "68%" }],
+    status: "healthy", battery: 35, signal: -81, icon: Thermometer 
+  },
+  { 
+    id: "n4", masterId: "m3", label: "ENV-IND-004", type: "Water Level", x: 300, y: 420, 
+    readings: [{ label: "Level", value: "2.4 m" }, { label: "Threshold", value: "3.5 m" }],
+    status: "healthy", battery: 100, solar: true, signal: -55, icon: Waves 
+  },
+  { 
+    id: "n5", masterId: "m3", label: "ENV-IND-005", type: "Soil Moisture", x: 450, y: 390, 
+    readings: [{ label: "Moisture", value: "64%" }, { label: "Temp", value: "21.1 °C" }],
+    status: "healthy", battery: 78, signal: -62, icon: Droplets 
+  },
+  { 
+    id: "n6", masterId: "m2", label: "ENV-IND-006", type: "Air Quality", x: 680, y: 330, 
+    readings: [{ label: "AQI", value: "148" }, { label: "PM2.5", value: "54 µg/m³" }],
+    status: "warning", battery: 55, solar: true, signal: -75, icon: Wind 
+  },
+  { 
+    id: "n7", masterId: "m2", label: "ENV-IND-007", type: "Seismic Tilt", x: 500, y: 200, 
+    readings: [{ label: "Tilt", value: "0.2°" }, { label: "Stability", value: "High" }],
+    status: "healthy", battery: 12, signal: -92, icon: Mountain 
+  },
+  { 
+    id: "n14", masterId: "m3", label: "ENV-IND-014", type: "Landslide Risk", x: 620, y: 440, 
+    readings: [{ label: "Tilt", value: "18.4°" }, { label: "Acceleration", value: "HIGH" }],
+    status: "critical", battery: 88, solar: true, signal: -64, icon: Mountain,
+    alertType: "LANDSLIDE RISK DETECTED", riskLevel: "CRITICAL"
+  },
 ];
 
-function curve(x: number, y: number) {
-  const midX = (x + GATEWAY.x) / 2;
-  const midY = Math.min(y, GATEWAY.y) - 46;
-  return `M ${x} ${y} Q ${midX} ${midY} ${GATEWAY.x} ${GATEWAY.y}`;
+const STATUS_COLORS = {
+  healthy: "#22C55E",
+  warning: "#EAB308",
+  critical: "#EF4444",
+  offline: "#64748B"
+};
+
+function getBatteryColor(pct: number) {
+  if (pct >= 80) return "#22C55E";
+  if (pct >= 40) return "#EAB308";
+  return "#EF4444";
 }
 
-const FLOATING = [
-  { value: "248", label: "Active Sensors", pos: "left-3 top-4", testId: "hero-kpi-sensors" },
-  { value: "32", label: "Monitoring Zones", pos: "right-3 top-20", testId: "hero-kpi-zones" },
-  { value: "1,240", label: "Live Data Streams", pos: "left-3 bottom-20", testId: "hero-kpi-streams" },
-  { value: "03", label: "Active Alerts", pos: "right-3 bottom-5", testId: "hero-kpi-alerts" },
-];
+function curveTo(x1: number, y1: number, x2: number, y2: number) {
+  const midX = (x1 + x2) / 2;
+  const midY = Math.min(y1, y2) - 40;
+  return `M ${x1} ${y1} Q ${midX} ${midY} ${x2} ${y2}`;
+}
 
-/**
- * The centrepiece home-page visualization: an SVG hill terrain with distributed LoRa
- * sensor nodes streaming data packets to a central LoRaWAN gateway, then onward to the
- * network server and the GIS + AI platform.
- */
 export default function EnvironmentalNetworkAnimation() {
-  const [active, setActive] = useState<string | null>(null);
-  const hovered = NODES.find((n) => n.id === active) ?? null;
+  const [viewMode, setViewMode] = useState<ViewMode>("network");
+  const [zoom, setZoom] = useState(1);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      containerRef.current?.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+  };
 
   return (
-    <div className="relative w-full ein-animated" data-testid="environmental-network-animation">
-      <div className="overflow-hidden rounded-xl border border-[#1E3A5F] bg-[#0C2340] shadow-[0_18px_40px_-18px_rgba(11,37,69,0.55)]">
-        <div className="flex items-center justify-between border-b border-[#1E3A5F] px-4 py-2.5">
-          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-sky-300">
-            LoRaWAN Sensor Network · Live
+    <div 
+      ref={containerRef}
+      className={cn(
+        "relative flex w-full flex-col overflow-hidden bg-[#0C2340] ein-animated font-sans text-slate-100",
+        isFullscreen ? "h-screen rounded-none" : "min-h-[600px] rounded-xl border border-[#1E3A5F] shadow-2xl"
+      )}
+      data-testid="environmental-network-topology"
+    >
+      {/* Top Header */}
+      <div className="absolute left-0 right-0 top-0 z-10 flex items-center justify-between border-b border-[#1E3A5F]/60 bg-[#0C2340]/80 px-4 py-3 backdrop-blur-sm">
+        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.2em] text-sky-300">
+          Environmental Monitoring Network Topology
+        </span>
+        <span className="inline-flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+          <span className="relative flex size-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex size-2 rounded-full bg-emerald-500"></span>
           </span>
-          <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
-            <span className="size-1.5 animate-pulse rounded-full bg-emerald-400" /> Streaming
-          </span>
-        </div>
-
-        <svg viewBox="0 0 800 520" preserveAspectRatio="xMidYMid meet" className="block h-auto w-full" role="img" aria-label="Animated LoRaWAN environmental sensor network over hill terrain">
-          <defs>
-            <linearGradient id="hillFar" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#12456F" />
-              <stop offset="100%" stopColor="#0C2340" />
-            </linearGradient>
-            <linearGradient id="hillNear" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#1B4D3E" />
-              <stop offset="100%" stopColor="#0E3327" />
-            </linearGradient>
-            <pattern id="geoGrid" width="40" height="40" patternUnits="userSpaceOnUse">
-              <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1E3A5F" strokeWidth="0.6" />
-            </pattern>
-          </defs>
-
-          {/* geographic grid */}
-          <rect width="800" height="520" fill="url(#geoGrid)" opacity="0.55" />
-
-          {/* far ridge + near hill terrain */}
-          <path d="M0 300 L120 214 L210 258 L318 168 L430 236 L540 176 L668 244 L800 196 L800 520 L0 520 Z" fill="url(#hillFar)" />
-          <path d="M0 372 L130 300 L250 352 L372 288 L500 356 L620 306 L732 366 L800 336 L800 520 L0 520 Z" fill="url(#hillNear)" opacity="0.96" />
-
-          {/* GIS contour lines */}
-          {[398, 428, 458, 488].map((y, i) => (
-            <path
-              key={y}
-              d={`M0 ${y} C 140 ${y - 22}, 280 ${y + 16}, 420 ${y - 12} S 660 ${y + 18}, 800 ${y - 8}`}
-              fill="none"
-              stroke="#38BDF8"
-              strokeWidth="0.7"
-              opacity={0.16 + i * 0.03}
-            />
-          ))}
-
-          {/* forest canopy */}
-          {[40, 78, 168, 206, 292, 560, 600, 700, 748].map((x, i) => (
-            <g key={x} opacity="0.7">
-              <path d={`M${x} ${430 + (i % 3) * 14} l-11 26 h22 z`} fill="#14503C" />
-              <path d={`M${x} ${442 + (i % 3) * 14} l-13 26 h26 z`} fill="#1B6349" />
-            </g>
-          ))}
-
-          {/* connection paths + travelling data packets */}
-          {NODES.map((node, i) => (
-            <g key={`path-${node.id}`}>
-              <path d={curve(node.x, node.y)} fill="none" stroke="#1E5A8A" strokeWidth="1.1" opacity="0.75" />
-              <path
-                d={curve(node.x, node.y)}
-                fill="none"
-                stroke="#38BDF8"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-                strokeDasharray="10 210"
-                style={{ animation: `ein-packet 2.8s linear ${i * 0.34}s infinite` }}
-              />
-            </g>
-          ))}
-
-          {/* sensor nodes */}
-          {NODES.map((node, i) => (
-            <g
-              key={node.id}
-              onMouseEnter={() => setActive(node.id)}
-              onMouseLeave={() => setActive(null)}
-              style={{ cursor: "pointer" }}
-              data-testid={`hero-sensor-node-${node.id}`}
-            >
-              <circle
-                cx={node.x}
-                cy={node.y}
-                r="13"
-                fill="none"
-                stroke={node.alert ? "#F59E0B" : "#22C55E"}
-                strokeWidth="1.4"
-                style={{ transformOrigin: `${node.x}px ${node.y}px`, animation: `ein-pulse 2.6s ease-out ${i * 0.3}s infinite` }}
-              />
-              <circle cx={node.x} cy={node.y} r="13" fill="#0B2545" stroke="#38BDF8" strokeWidth="1.4" />
-              <circle cx={node.x} cy={node.y} r="4" fill={node.alert ? "#F59E0B" : "#22C55E"} />
-              <circle cx={node.x + 10} cy={node.y - 10} r="2.6" fill="#22C55E" />
-            </g>
-          ))}
-
-          {/* LoRaWAN gateway */}
-          <g data-testid="hero-lorawan-gateway">
-            {[0, 1, 2].map((i) => (
-              <circle
-                key={i}
-                cx={GATEWAY.x}
-                cy={GATEWAY.y}
-                r="18"
-                fill="none"
-                stroke="#06B6D4"
-                strokeWidth="1.4"
-                style={{ animation: `ein-wave 3.2s ease-out ${i * 1.05}s infinite` }}
-              />
-            ))}
-            <line x1={GATEWAY.x} y1={GATEWAY.y + 18} x2={GATEWAY.x} y2={GATEWAY.y + 74} stroke="#1E5A8A" strokeWidth="3" />
-            <circle cx={GATEWAY.x} cy={GATEWAY.y} r="24" fill="#0B2545" stroke="#06B6D4" strokeWidth="2" />
-            <path d={`M${GATEWAY.x - 9} ${GATEWAY.y + 7} L${GATEWAY.x} ${GATEWAY.y - 11} L${GATEWAY.x + 9} ${GATEWAY.y + 7}`} fill="none" stroke="#67E8F9" strokeWidth="2" strokeLinecap="round" />
-            <circle cx={GATEWAY.x} cy={GATEWAY.y - 15} r="2.6" fill="#67E8F9" />
-            <rect x={GATEWAY.x - 62} y={GATEWAY.y - 56} width="124" height="20" rx="10" fill="#06B6D4" opacity="0.16" />
-            <text x={GATEWAY.x} y={GATEWAY.y - 42} textAnchor="middle" fill="#A5F3FC" fontSize="11" fontWeight="600" letterSpacing="1.2">
-              LoRaWAN GATEWAY
-            </text>
-          </g>
-
-          {/* downstream chain: gateway → network server → GIS + AI */}
-          <g>
-            <path d={`M${GATEWAY.x} ${GATEWAY.y + 74} L${GATEWAY.x} ${GATEWAY.y + 110}`} stroke="#38BDF8" strokeWidth="1.6" strokeDasharray="6 8" style={{ animation: "ein-packet 2.4s linear infinite" }} />
-            <rect x={GATEWAY.x - 92} y={GATEWAY.y + 110} width="184" height="30" rx="8" fill="#123E63" stroke="#1E5A8A" />
-            <text x={GATEWAY.x} y={GATEWAY.y + 130} textAnchor="middle" fill="#BAE6FD" fontSize="11" fontWeight="600">
-              NETWORK / CLOUD SERVER
-            </text>
-            <path d={`M${GATEWAY.x} ${GATEWAY.y + 140} L${GATEWAY.x} ${GATEWAY.y + 176}`} stroke="#2DD4BF" strokeWidth="1.6" strokeDasharray="6 8" style={{ animation: "ein-packet 2.4s linear 0.6s infinite" }} />
-            <rect x={GATEWAY.x - 108} y={GATEWAY.y + 176} width="216" height="32" rx="8" fill="#0F4C81" stroke="#38BDF8" />
-            <text x={GATEWAY.x} y={GATEWAY.y + 197} textAnchor="middle" fill="#FFFFFF" fontSize="11.5" fontWeight="700" letterSpacing="0.6">
-              GIS + AI INTELLIGENCE PLATFORM
-            </text>
-          </g>
-        </svg>
+          Live Streaming
+        </span>
       </div>
 
-      {/* floating KPI cards */}
-      {FLOATING.map((card) => (
-        <div
-          key={card.testId}
-          className={`absolute ${card.pos} hidden rounded-lg border border-white/70 bg-white/90 px-3 py-2 shadow-[0_8px_24px_-8px_rgba(11,37,69,0.35)] backdrop-blur-md sm:block`}
-          data-testid={card.testId}
+      {/* Main SVG Visualization */}
+      <div className="relative flex-1 cursor-grab overflow-hidden active:cursor-grabbing">
+        <div 
+          className="absolute inset-0 transition-transform duration-300 ease-out"
+          style={{ transform: `scale(${zoom})`, transformOrigin: "center center" }}
         >
-          <p className="font-mono text-lg font-bold leading-none text-[#0B2545]">{card.value}</p>
-          <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">{card.label}</p>
-        </div>
-      ))}
+          <svg viewBox="0 0 800 600" preserveAspectRatio="xMidYMid meet" className="block h-full w-full">
+            <defs>
+              <linearGradient id="hillFar" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#12456F" />
+                <stop offset="100%" stopColor="#0C2340" />
+              </linearGradient>
+              <linearGradient id="hillNear" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#1B4D3E" />
+                <stop offset="100%" stopColor="#0E3327" />
+              </linearGradient>
+              <pattern id="geoGrid" width="40" height="40" patternUnits="userSpaceOnUse">
+                <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1E3A5F" strokeWidth="0.8" opacity="0.6" />
+                <path d="M 0 40 L 40 40 L 40 0" fill="none" stroke="#1E3A5F" strokeWidth="0.4" opacity="0.3" />
+              </pattern>
+              
+              <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="3" result="blur" />
+                <feComposite in="SourceGraphic" in2="blur" operator="over" />
+              </filter>
+            </defs>
 
-      {/* hovered node telemetry inspector */}
-      <div className="mt-3 flex min-h-[44px] items-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-2.5" data-testid="hero-node-inspector">
-        {hovered ? (
-          <>
-            <span className="grid size-7 place-items-center rounded-md bg-[#0F4C81]/10 text-[#0F4C81]">
-              <hovered.icon className="size-4" />
-            </span>
-            <span className="text-sm font-semibold text-slate-900">{hovered.label}</span>
-            <span className="ml-auto font-mono text-sm font-bold text-[#0D9488]">{hovered.reading}</span>
-          </>
-        ) : (
-          <span className="inline-flex items-center gap-2 text-xs text-slate-500">
-            <RadioTower className="size-4 text-[#0F4C81]" />
-            Hover any sensor node to inspect its latest LoRa uplink.
-          </span>
-        )}
+            {/* Background Grid */}
+            <rect width="800" height="600" fill="url(#geoGrid)" />
+
+            {/* Terrain Layers */}
+            <path d="M0 340 L120 230 L250 290 L380 180 L520 260 L680 160 L800 240 L800 600 L0 600 Z" fill="url(#hillFar)" opacity="0.9" />
+            
+            {/* GIS Contour Lines */}
+            {[260, 310, 360, 410, 460].map((y, i) => (
+              <path
+                key={y}
+                d={`M0 ${y} C 180 ${y - 40}, 320 ${y + 30}, 480 ${y - 20} S 680 ${y + 40}, 800 ${y - 10}`}
+                fill="none"
+                stroke="#38BDF8"
+                strokeWidth="0.8"
+                opacity={0.15 + i * 0.04}
+              />
+            ))}
+
+            <path d="M0 440 L160 340 L320 400 L480 300 L640 380 L800 320 L800 600 L0 600 Z" fill="url(#hillNear)" opacity="0.95" />
+
+            {/* Master Node Connections */}
+            {MASTER_NODES.map((master, i) => (
+              <g key={`master-link-${master.id}`}>
+                <path d={curveTo(master.x, master.y, GATEWAY.x, GATEWAY.y + 20)} fill="none" stroke="#38BDF8" strokeWidth="1.5" opacity="0.4" />
+                <path
+                  d={curveTo(master.x, master.y, GATEWAY.x, GATEWAY.y + 20)}
+                  fill="none"
+                  stroke="#38BDF8"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  strokeDasharray="4 150"
+                  style={{ animation: `ein-packet 2s linear ${i * 0.5}s infinite` }}
+                />
+              </g>
+            ))}
+
+            {/* Sensor Node Connections */}
+            {NODES.map((node, i) => {
+              const master = MASTER_NODES.find(m => m.id === node.masterId)!;
+              const isAlert = node.status === 'critical';
+              return (
+                <g key={`node-link-${node.id}`}>
+                  <path 
+                    d={curveTo(node.x, node.y, master.x, master.y)} 
+                    fill="none" 
+                    stroke={isAlert ? "#EF4444" : "#2DD4BF"} 
+                    strokeWidth={isAlert ? "2" : "1"} 
+                    opacity={isAlert ? "0.8" : "0.3"} 
+                  />
+                  <path
+                    d={curveTo(node.x, node.y, master.x, master.y)}
+                    fill="none"
+                    stroke={isAlert ? "#EF4444" : "#2DD4BF"}
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeDasharray="4 100"
+                    style={{ animation: `ein-packet 2.5s linear ${i * 0.2}s infinite` }}
+                  />
+                </g>
+              );
+            })}
+
+            {/* Sensor Nodes */}
+            {NODES.map((node) => {
+              const color = 
+                viewMode === "health" ? STATUS_COLORS[node.status] : 
+                viewMode === "battery" ? getBatteryColor(node.battery) : 
+                node.status === "critical" ? STATUS_COLORS.critical : "#06B6D4";
+              
+
+              return (
+                <g 
+                  key={node.id} 
+                >
+                  {node.status === "critical" && (
+                    <circle cx={node.x} cy={node.y} r="20" fill="none" stroke="#EF4444" strokeWidth="1.5" className="animate-ping" />
+                  )}
+                  <circle cx={node.x} cy={node.y} r="14" fill="#0B2545" stroke={color} strokeWidth="1.5" />
+                  <foreignObject x={node.x - 9} y={node.y - 9} width="18" height="18">
+                    <div className="flex h-full w-full items-center justify-center text-white" style={{ color }}>
+                      <node.icon size={12} strokeWidth={2.5} />
+                    </div>
+                  </foreignObject>
+
+                  {/* Battery or Health small indicator */}
+                  {viewMode === "battery" && (
+                    <g transform={`translate(${node.x + 10}, ${node.y - 14})`}>
+                      <rect x="0" y="0" width="18" height="10" rx="2" fill="#0B2545" stroke={getBatteryColor(node.battery)} strokeWidth="1" />
+                      <text x="9" y="8" textAnchor="middle" fill={getBatteryColor(node.battery)} fontSize="8" fontWeight="bold">{node.battery}</text>
+                    </g>
+                  )}
+                  {viewMode === "health" && (
+                    <circle cx={node.x + 12} cy={node.y - 12} r="4" fill={STATUS_COLORS[node.status]} stroke="#0B2545" strokeWidth="1.5" />
+                  )}
+                  
+                  {/* Alert Label */}
+                  {node.alertType && viewMode !== "battery" && (
+                    <g transform={`translate(${node.x}, ${node.y + 24})`}>
+                      <rect x="-60" y="-8" width="120" height="16" rx="4" fill="#EF4444" opacity="0.9" />
+                      <text x="0" y="3" textAnchor="middle" fill="#FFFFFF" fontSize="8" fontWeight="bold" letterSpacing="0.5">
+                        {node.alertType}
+                      </text>
+                    </g>
+                  )}
+                </g>
+              );
+            })}
+
+            {/* Master Nodes */}
+            {MASTER_NODES.map((master) => {
+              const color = viewMode === "health" ? STATUS_COLORS[master.status] : "#8B5CF6";
+              
+              return (
+                <g 
+                  key={master.id}
+                >
+                  <rect x={master.x - 20} y={master.y - 20} width="40" height="40" rx="8" fill="#1E1B4B" stroke={color} strokeWidth="2" filter="url(#glow)" />
+                  <foreignObject x={master.x - 12} y={master.y - 12} width="24" height="24">
+                    <div className="flex h-full w-full items-center justify-center" style={{ color }}>
+                      <Server size={16} strokeWidth={2} />
+                    </div>
+                  </foreignObject>
+                  <text x={master.x} y={master.y + 32} textAnchor="middle" fill="#E2E8F0" fontSize="9" fontWeight="bold" letterSpacing="0.5">
+                    {master.label}
+                  </text>
+                </g>
+              );
+            })}
+
+            {/* LoRaWAN Gateway */}
+            <g data-testid="hero-lorawan-gateway">
+              {[0, 1, 2].map((i) => (
+                <circle
+                  key={i}
+                  cx={GATEWAY.x}
+                  cy={GATEWAY.y}
+                  r="24"
+                  fill="none"
+                  stroke="#38BDF8"
+                  strokeWidth="1.5"
+                  opacity="0.6"
+                  style={{ animation: `ein-wave 3s ease-out ${i * 1}s infinite` }}
+                />
+              ))}
+              <line x1={GATEWAY.x} y1={GATEWAY.y + 24} x2={GATEWAY.x} y2={GATEWAY.y + 70} stroke="#1E5A8A" strokeWidth="4" />
+              <circle cx={GATEWAY.x} cy={GATEWAY.y} r="28" fill="#0B2545" stroke="#38BDF8" strokeWidth="2" filter="url(#glow)" />
+              <Antenna x={GATEWAY.x - 16} y={GATEWAY.y - 16} width={32} height={32} color="#BAE6FD" strokeWidth={2} />
+              
+              <rect x={GATEWAY.x - 64} y={GATEWAY.y - 64} width="128" height="20" rx="10" fill="#0EA5E9" opacity="0.2" />
+              <text x={GATEWAY.x} y={GATEWAY.y - 50} textAnchor="middle" fill="#E0F2FE" fontSize="10" fontWeight="bold" letterSpacing="1.2">
+                LoRaWAN GATEWAY
+              </text>
+            </g>
+
+            {/* Gateway to Cloud to GIS */}
+            <g>
+              {/* Uplink to Cloud */}
+              <path d={`M${GATEWAY.x} ${GATEWAY.y + 70} L${GATEWAY.x} ${GATEWAY.y + 110}`} stroke="#38BDF8" strokeWidth="2" strokeDasharray="6 8" style={{ animation: "ein-packet 1.5s linear infinite" }} />
+              
+              {/* Cloud Server */}
+              <rect x={GATEWAY.x - 90} y={GATEWAY.y + 110} width="180" height="34" rx="8" fill="#0F172A" stroke="#38BDF8" strokeWidth="1.5" filter="url(#glow)" />
+              <text x={GATEWAY.x} y={GATEWAY.y + 131} textAnchor="middle" fill="#F8FAFC" fontSize="11" fontWeight="bold" letterSpacing="1">
+                NETWORK / CLOUD SERVER
+              </text>
+
+              {/* Link to GIS */}
+              <path d={`M${GATEWAY.x} ${GATEWAY.y + 144} L${GATEWAY.x} ${GATEWAY.y + 420}`} stroke="#10B981" strokeWidth="2" strokeDasharray="6 8" style={{ animation: "ein-packet 1.5s linear 0.75s infinite" }} />
+              
+              {/* GIS Platform */}
+              <rect x={GATEWAY.x - 110} y={GATEWAY.y + 420} width="220" height="38" rx="8" fill="#064E3B" stroke="#10B981" strokeWidth="2" filter="url(#glow)" />
+              <text x={GATEWAY.x} y={GATEWAY.y + 443} textAnchor="middle" fill="#FFFFFF" fontSize="12" fontWeight="bold" letterSpacing="1.5">
+                GIS + AI INTELLIGENCE
+              </text>
+            </g>
+          </svg>
+        </div>
+
+        {/* Network Status KPI Panel */}
+        <div className="absolute left-4 top-14 hidden rounded-md border border-slate-700/50 bg-[#0F172A]/90 p-2.5 shadow-xl backdrop-blur-md sm:block w-[180px] z-10 pointer-events-none">
+          <h3 className="mb-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">Network Status</h3>
+          <div className="space-y-2">
+            <div className="flex justify-between items-center text-[10px]">
+              <span className="text-slate-300">Active Nodes</span>
+              <span className="font-mono font-bold text-white">24 / 26</span>
+            </div>
+            <div className="flex justify-between items-center text-[10px]">
+              <span className="text-slate-300">Master Nodes</span>
+              <span className="font-mono font-bold text-white">03 / 03</span>
+            </div>
+            <div className="flex justify-between items-center text-[10px]">
+              <span className="text-slate-300">Gateway Status</span>
+              <span className="font-mono font-bold text-emerald-400">ONLINE</span>
+            </div>
+            <div className="flex justify-between items-center text-[10px]">
+              <span className="text-slate-300">Packets / Min</span>
+              <span className="font-mono font-bold text-white">1,248</span>
+            </div>
+            <div className="flex justify-between items-center text-[10px]">
+              <span className="text-slate-300">Avg Battery</span>
+              <span className="font-mono font-bold text-emerald-400">82%</span>
+            </div>
+          </div>
+        </div>
+
+
+      </div>
+
+      {/* Interactive Controls panel */}
+      <div className="absolute bottom-6 right-6 flex flex-col gap-2">
+        <div className="flex flex-col rounded-lg border border-slate-700 bg-[#0F172A]/90 p-1 shadow-xl backdrop-blur-md self-end">
+          <button onClick={() => setZoom(z => Math.min(z + 0.2, 2.5))} className="p-2 text-slate-400 hover:bg-slate-800 hover:text-white rounded" title="Zoom In"><ZoomIn size={18} /></button>
+          <button onClick={() => setZoom(z => Math.max(z - 0.2, 0.5))} className="p-2 text-slate-400 hover:bg-slate-800 hover:text-white rounded" title="Zoom Out"><ZoomOut size={18} /></button>
+          <button onClick={() => setZoom(1)} className="p-2 text-slate-400 hover:bg-slate-800 hover:text-white rounded font-mono text-xs font-bold" title="Reset Zoom">1x</button>
+          <div className="my-1 h-px w-full bg-slate-700" />
+          <button onClick={toggleFullscreen} className="p-2 text-slate-400 hover:bg-slate-800 hover:text-white rounded" title="Toggle Fullscreen">
+            {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+          </button>
+        </div>
+
+        <div className="flex rounded-lg border border-slate-700 bg-[#0F172A]/90 p-1 shadow-xl backdrop-blur-md">
+          <button 
+            onClick={() => setViewMode("network")} 
+            className={cn("flex items-center gap-2 rounded px-3 py-2 text-xs font-bold transition-colors", viewMode === "network" ? "bg-sky-500 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white")}
+          >
+            <Network size={14} /> <span className="hidden sm:inline">Network</span>
+          </button>
+          <button 
+            onClick={() => setViewMode("health")} 
+            className={cn("flex items-center gap-2 rounded px-3 py-2 text-xs font-bold transition-colors", viewMode === "health" ? "bg-emerald-500 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white")}
+          >
+            <ShieldAlert size={14} /> <span className="hidden sm:inline">Health</span>
+          </button>
+          <button 
+            onClick={() => setViewMode("battery")} 
+            className={cn("flex items-center gap-2 rounded px-3 py-2 text-xs font-bold transition-colors", viewMode === "battery" ? "bg-amber-500 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white")}
+          >
+            <Battery size={14} /> <span className="hidden sm:inline">Battery</span>
+          </button>
+          <button 
+            onClick={() => setViewMode("sensor")} 
+            className={cn("flex items-center gap-2 rounded px-3 py-2 text-xs font-bold transition-colors", viewMode === "sensor" ? "bg-indigo-500 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white")}
+          >
+            <Activity size={14} /> <span className="hidden sm:inline">Sensor</span>
+          </button>
+        </div>
       </div>
     </div>
   );

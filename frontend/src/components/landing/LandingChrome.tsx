@@ -6,10 +6,7 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { label: "Home", to: "/" },
-  { label: "Platform", to: "/about" },
-  { label: "Monitoring", to: "/how-it-works" },
-  { label: "GIS Intelligence", to: "/technology#gis" },
-  { label: "Technology", to: "/technology" },
+  { label: "Platform", to: "/platform" },
   { label: "About", to: "/about" },
 ];
 
@@ -44,13 +41,13 @@ export function LandingNavbar() {
           </span>
         </Link>
 
-        <nav className="ml-auto hidden items-center gap-1 lg:flex" data-testid="landing-nav-links">
+        <nav className="ml-auto hidden items-center gap-2 lg:flex" data-testid="landing-nav-links">
           {NAV.map((item, i) => (
             <Link
               key={`${item.label}-${i}`}
               to={item.to}
               className={cn(
-                "rounded-md px-3 py-2 text-sm font-medium text-slate-600 transition-colors duration-150 hover:bg-slate-100 hover:text-[#0F4C81]",
+                "rounded-md px-4 py-2 text-base font-semibold text-slate-600 transition-colors duration-150 hover:bg-slate-100 hover:text-[#0F4C81]",
                 pathname === item.to && "text-[#0F4C81]",
               )}
               data-testid={`nav-link-${item.label.toLowerCase().replace(/\s+/g, "-")}`}
@@ -61,13 +58,10 @@ export function LandingNavbar() {
         </nav>
 
         <div className="ml-auto flex items-center gap-2 lg:ml-0">
-          <span className="hidden rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 font-mono text-[10px] font-bold tracking-wider text-amber-800 xl:inline">
-            NDMA HELPLINE 1078
-          </span>
-          <Link to="/login" className={buttonVariants({ variant: "outline", size: "sm", className: "hidden sm:inline-flex" })} data-testid="navbar-login-btn">
+          <Link to="/login" className={buttonVariants({ variant: "outline", size: "default", className: "hidden sm:inline-flex font-semibold" })} data-testid="navbar-login-btn">
             Login
           </Link>
-          <Link to="/register" className={buttonVariants({ size: "sm", className: "hidden sm:inline-flex" })} data-testid="navbar-register-btn">
+          <Link to="/register" className={buttonVariants({ size: "default", className: "hidden sm:inline-flex font-semibold" })} data-testid="navbar-register-btn">
             Register
           </Link>
           <Button variant="ghost" size="icon-sm" className="lg:hidden" onClick={() => setOpen((v) => !v)} data-testid="navbar-mobile-toggle" aria-label="Toggle navigation">
@@ -100,45 +94,46 @@ export function LandingNavbar() {
 
 export function GovernmentFooter() {
   return (
-    <footer className="border-t border-[#1E3A5F] bg-[#0B2545] text-slate-300" data-testid="government-footer">
-      <div className="mx-auto grid max-w-7xl gap-8 px-4 py-12 sm:px-6 lg:grid-cols-4 lg:px-8">
+    <footer className="border-t border-[#1E3A5F] bg-[#0A192F] text-slate-300" data-testid="government-footer">
+      <div className="mx-auto grid max-w-7xl gap-8 px-4 py-16 sm:px-6 lg:grid-cols-4 lg:px-8">
         <div className="lg:col-span-2">
           <div className="flex items-center gap-3">
-            <span className="grid size-10 place-items-center rounded-lg bg-white/10 text-white">
+            <span className="grid size-10 place-items-center rounded-lg bg-emerald-500/20 text-emerald-400">
               <ShieldCheck className="size-5" />
             </span>
             <span>
-              <span className="block text-[11px] font-bold uppercase tracking-[0.2em] text-sky-300">Environmental</span>
-              <span className="block text-[13px] font-bold uppercase tracking-[0.14em] text-white">Intelligence Network</span>
+              <span className="block text-[14px] font-bold tracking-tight text-white">Environmental Intelligence Network</span>
+              <span className="block text-[11px] font-semibold uppercase tracking-[0.1em] text-emerald-400">From Environmental Signals to Actionable Intelligence.</span>
             </span>
           </div>
-          <p className="mt-4 max-w-md text-sm leading-relaxed text-slate-400">
-            An integrated national environmental intelligence platform for disaster management authorities,
-            forest departments, environmental agencies and emergency response teams.
+          <p className="mt-6 max-w-md text-sm leading-relaxed text-slate-400">
+            An integrated monitoring and decision-support platform for disaster management authorities, forest departments, environmental agencies, and emergency response organizations.
           </p>
-          <p className="mt-4 font-mono text-[11px] uppercase tracking-wider text-slate-500">Platform version 3.4.2 · NIC compliant</p>
         </div>
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white">Platform</p>
-          <ul className="mt-3 space-y-2 text-sm">
-            <li><Link to="/about" className="hover:text-white">About Platform</Link></li>
-            <li><Link to="/technology" className="hover:text-white">Technology</Link></li>
-            <li><Link to="/how-it-works" className="hover:text-white">How It Works</Link></li>
-            <li><Link to="/login" className="hover:text-white">Officer Sign In</Link></li>
+          <p className="text-xs font-bold uppercase tracking-[0.14em] text-white">Platform</p>
+          <ul className="mt-4 space-y-3 text-sm">
+            <li><Link to="/about" className="text-slate-400 hover:text-white transition-colors">About the Platform</Link></li>
+            <li><Link to="/platform" className="text-slate-400 hover:text-white transition-colors">Platform Architecture</Link></li>
+            <li><Link to="/login" className="text-slate-400 hover:text-white transition-colors">Live Monitoring</Link></li>
+            <li><Link to="/login" className="text-slate-400 hover:text-white transition-colors">GIS Intelligence</Link></li>
+            <li><Link to="/login" className="text-emerald-400 hover:text-emerald-300 transition-colors font-medium">Officer Sign In</Link></li>
           </ul>
         </div>
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white">Emergency</p>
-          <ul className="mt-3 space-y-2 font-mono text-sm">
-            <li>NDMA Helpline · 1078</li>
-            <li>Disaster Control · 108</li>
-            <li>Forest Fire · 1926</li>
+          <p className="text-xs font-bold uppercase tracking-[0.14em] text-white">Emergency</p>
+          <ul className="mt-4 space-y-3 font-mono text-sm">
+            <li className="text-amber-400"><span className="text-slate-400 font-sans mr-2">NDMA Helpline</span> 1078</li>
+            <li className="text-amber-400"><span className="text-slate-400 font-sans mr-2">Emergency Response</span> 112</li>
           </ul>
         </div>
       </div>
-      <div className="border-t border-white/10 px-4 py-5 text-center text-xs text-slate-500 sm:px-6 lg:px-8">
-        © {new Date().getFullYear()} Environmental Intelligence Network. Restricted government monitoring system.
-        Access is logged and audited. AI outputs are decision-support only.
+      <div className="border-t border-slate-800 bg-[#061121] px-4 py-6 sm:px-6 lg:px-8 flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-slate-500">
+        <div className="flex items-center gap-2 text-red-400/80 font-mono tracking-widest font-bold">
+          <span className="relative flex size-1.5"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75"></span><span className="relative inline-flex size-1.5 rounded-full bg-red-500"></span></span>
+          RESTRICTED GOVERNMENT MONITORING PLATFORM
+        </div>
+        <p>© 2026 Environmental Intelligence Network. All authorized access is logged and audited.</p>
       </div>
     </footer>
   );

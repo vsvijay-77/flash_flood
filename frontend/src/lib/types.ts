@@ -79,6 +79,26 @@ export interface Zone {
   sensor_count: number;
 }
 
+export interface CustomArea {
+  id: string;
+  name: string;
+  district: string;
+  type: string;
+  risk: string;
+  priority: string;
+  description: string;
+  bounds?: any;
+  date: string;
+  lat: number;
+  lng: number;
+  shape: string;
+  polygon: [number, number][];
+  areaSqMeters: number;
+  user_id?: string | null;
+  monitoring_type?: "flood" | "landslide" | "combined";
+  area_size_km?: number;
+}
+
 export interface NetworkStats {
   active_sensors: number;
   total_sensors: number;
@@ -196,7 +216,6 @@ export const RISK_STYLES: Record<RiskLevel, { bg: string; text: string; dot: str
 export const HAZARD_LABELS: Record<string, string> = {
   landslide: "Landslide",
   flood: "Flood",
-  forest_fire: "Forest Fire",
   air_quality: "Air Quality",
 };
 

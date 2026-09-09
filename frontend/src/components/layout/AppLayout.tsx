@@ -136,22 +136,28 @@ export default function AppLayout() {
     <div className="flex min-h-screen bg-[#F7F9FC]">
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex flex-col border-r border-[#1E3A5F] bg-[#0B2545] transition-[width,transform] duration-200 lg:static lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-40 flex flex-col border-r border-[#1E3A5F] bg-[#0B2545] transition-[width,transform] duration-200 lg:sticky lg:top-0 lg:h-screen lg:translate-x-0",
           collapsed ? "lg:w-[76px]" : "lg:w-64",
           mobileOpen ? "w-64 translate-x-0" : "w-64 -translate-x-full",
         )}
         data-testid="app-sidebar"
       >
-        <div className="flex items-center gap-3 border-b border-white/10 px-4 py-4">
-          <Link to="/dashboard" className="grid size-9 shrink-0 place-items-center rounded-lg bg-white/10 text-white" data-testid="sidebar-logo">
-            <ShieldCheck className="size-5" />
-          </Link>
-          {!collapsed ? (
-            <span className="min-w-0 leading-none">
-              <span className="block text-[10px] font-bold uppercase tracking-[0.18em] text-sky-300">Environmental</span>
-              <span className="block truncate text-[12px] font-bold uppercase tracking-[0.12em] text-white">Intelligence Network</span>
-            </span>
-          ) : null}
+        <div className={cn("flex items-center border-b border-white/10 py-4", collapsed ? "flex-col gap-4 px-2" : "justify-between px-4")}>
+          <div className="flex items-center gap-3">
+            <Link to="/dashboard" className="grid size-9 shrink-0 place-items-center rounded-lg bg-white/10 text-white" data-testid="sidebar-logo">
+              <ShieldCheck className="size-5" />
+            </Link>
+            {!collapsed ? (
+              <span className="min-w-0 leading-none">
+                <span className="block text-[10px] font-bold uppercase tracking-[0.18em] text-sky-300">Environmental</span>
+                <span className="block truncate text-[12px] font-bold uppercase tracking-[0.12em] text-white">Intelligence</span>
+              </span>
+            ) : null}
+          </div>
+          
+          <Button variant="ghost" size="icon-sm" className={cn("text-slate-300 hover:bg-white/5 hover:text-white shrink-0", collapsed && "mx-auto")} onClick={() => setCollapsed((v) => !v)} data-testid="sidebar-collapse-btn">
+            <ChevronLeft className={cn("size-4 transition-transform duration-200", collapsed && "rotate-180")} />
+          </Button>
         </div>
 
         <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4" data-testid="sidebar-nav">
@@ -173,10 +179,6 @@ export default function AppLayout() {
               <p className="font-mono text-lg font-bold text-white">{stats?.monitoring_zones ?? "—"}</p>
             </div>
           ) : null}
-          <Button variant="ghost" size="sm" className="w-full justify-start text-slate-300 hover:bg-white/5 hover:text-white" onClick={() => setCollapsed((v) => !v)} data-testid="sidebar-collapse-btn">
-            <ChevronLeft className={cn("size-4 transition-transform duration-200", collapsed && "rotate-180")} />
-            {!collapsed ? "Collapse" : null}
-          </Button>
         </div>
       </aside>
 

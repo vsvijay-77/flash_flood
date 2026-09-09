@@ -163,3 +163,46 @@ export function LoadingRows({ rows = 3, testId = "loading-rows" }: { rows?: numb
     </div>
   );
 }
+
+export function LoadingSymbol({
+  size = "md",
+  label = "Loading data...",
+  className,
+}: {
+  size?: "sm" | "md" | "lg";
+  label?: string;
+  className?: string;
+}) {
+  const sizeMap = {
+    sm: "size-5 border-2",
+    md: "size-9 border-3",
+    lg: "size-14 border-4",
+  };
+  return (
+    <div className={cn("flex flex-col items-center justify-center gap-3 p-6", className)} role="status" aria-label={label}>
+      <div className="relative flex items-center justify-center">
+        <div className={cn("animate-spin rounded-full border-slate-200 border-t-emerald-500", sizeMap[size])} />
+        <div className="absolute size-2.5 animate-ping rounded-full bg-emerald-500 opacity-75" />
+      </div>
+      {label ? <span className="text-xs font-semibold tracking-wide text-slate-500">{label}</span> : null}
+    </div>
+  );
+}
+
+export function LoadingOverlay({ message = "Loading module..." }: { message?: string }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/25 backdrop-blur-[2px]">
+      <div className="flex flex-col items-center gap-4 rounded-2xl border border-slate-200 bg-white/95 px-8 py-7 shadow-2xl backdrop-blur-md">
+        <div className="relative flex items-center justify-center">
+          <div className="size-12 animate-spin rounded-full border-4 border-slate-200 border-t-emerald-500" />
+          <div className="absolute size-3 animate-ping rounded-full bg-emerald-500 opacity-75" />
+        </div>
+        <div className="flex flex-col items-center gap-1 text-center">
+          <p className="text-sm font-bold text-slate-800">{message}</p>
+          <p className="text-[11px] font-medium text-slate-500">Retrieving & caching environmental data</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+

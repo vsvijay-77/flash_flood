@@ -1,6 +1,9 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "@fontsource/poppins/500.css";
+@import "@fontsource/poppins/900.css";
+
 @import "@fontsource-variable/inter";
 @import "@fontsource/ibm-plex-sans/400.css";
 @import "@fontsource/ibm-plex-sans/500.css";
@@ -180,6 +183,10 @@
 .leaflet-popup-content-wrapper {
   border-radius: 10px;
   box-shadow: 0 8px 24px rgba(11, 37, 69, 0.16);
+}
+/* Hide Leaflet attribution branding */
+.leaflet-control-attribution {
+  display: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
