@@ -371,6 +371,105 @@ export function CesiumDigitalTwinViewer({
     return inside;
   };
 
+  /**
+   * Calculates 2D line segment intersection between (p1x, p1y)-(p2x, p2y) and (p3x, p3y)-(p4x, p4y).
+   */
+  const lineSegmentIntersection = (
+    p1x: number, p1y: number, p2x: number, p2y: number,
+    p3x: number, p3y: number, p4x: number, p4y: number
+  ): [number, number] | null => {
+    const d = (p2x - p1x) * (p4y - p3y) - (p2y - p1y) * (p4x - p3x);
+    if (Math.abs(d) < 1e-12) return null;
+    const t = ((p3x - p1x) * (p4y - p3y) - (p3y - p1y) * (p4x - p3x)) / d;
+    const u = ((p3x - p1x) * (p2y - p1y) - (p3y - p1y) * (p2x - p1x)) / d;
+    if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+      return [p1x + t * (p2x - p1x), p1y + t * (p2y - p1y)];
+    }
+    return null;
+  };
+
+  /**
+   * Clips a polyline (array of [lng, lat]) strictly inside a polygon (array of [lat, lng]).
+   * Returns one or more contiguous line segments that are guaranteed to lie within the polygon.
+   */
+  const clipPolylineToPolygon = (
+    coords: [number, number][],
+    poly: [number, number][]
+  ): [number, number][][] => {
+    if (!poly || poly.length < 3) return [coords];
+    const segments: [number, number][][] = [];
+    let cur: [number, number][] = [];
+
+    for (let i = 0; i < coords.length - 1; i++) {
+      const p1 = coords[i];     // [lng, lat]
+      const p2 = coords[i + 1]; // [lng, lat]
+      const in1 = isPointInPolygon(p1[1], p1[0], poly);
+      const in2 = isPointInPolygon(p2[1], p2[0], poly);
+
+      if (in1 && in2) {
+        if (cur.length === 0) cur.push(p1);
+        cur.push(p2);
+      } else if (in1 && !in2) {
+        // Line exits polygon: find intersection with polygon boundary
+        let pt: [number, number] | null = null;
+        let minT = Infinity;
+        for (let j = 0, k = poly.length - 1; j < poly.length; k = j++) {
+          const c: [number, number] = [poly[k][1], poly[k][0]]; // [lng, lat]
+          const d: [number, number] = [poly[j][1], poly[j][0]]; // [lng, lat]
+          const inter = lineSegmentIntersection(p1[0], p1[1], p2[0], p2[1], c[0], c[1], d[0], d[1]);
+          if (inter) {
+            const dist = Math.hypot(inter[0] - p1[0], inter[1] - p1[1]);
+            if (dist < minT) { minT = dist; pt = inter; }
+          }
+        }
+        if (cur.length === 0) cur.push(p1);
+        if (pt) cur.push(pt);
+        if (cur.length >= 2) segments.push(cur);
+        cur = [];
+      } else if (!in1 && in2) {
+        // Line enters polygon: find intersection with polygon boundary
+        let pt: [number, number] | null = null;
+        let minT = Infinity;
+        for (let j = 0, k = poly.length - 1; j < poly.length; k = j++) {
+          const c: [number, number] = [poly[k][1], poly[k][0]];
+          const d: [number, number] = [poly[j][1], poly[j][0]];
+          const inter = lineSegmentIntersection(p1[0], p1[1], p2[0], p2[1], c[0], c[1], d[0], d[1]);
+          if (inter) {
+            const dist = Math.hypot(inter[0] - p2[0], inter[1] - p2[1]);
+            if (dist < minT) { minT = dist; pt = inter; }
+          }
+        }
+        if (cur.length >= 2) segments.push(cur);
+        cur = [];
+        if (pt) cur.push(pt);
+        cur.push(p2);
+      } else {
+        // Both outside: check if segment cuts across the polygon
+        const inters: { pt: [number, number]; t: number }[] = [];
+        for (let j = 0, k = poly.length - 1; j < poly.length; k = j++) {
+          const c: [number, number] = [poly[k][1], poly[k][0]];
+          const d: [number, number] = [poly[j][1], poly[j][0]];
+          const inter = lineSegmentIntersection(p1[0], p1[1], p2[0], p2[1], c[0], c[1], d[0], d[1]);
+          if (inter) {
+            const t = Math.hypot(inter[0] - p1[0], inter[1] - p1[1]);
+            inters.push({ pt: inter, t });
+          }
+        }
+        if (inters.length >= 2) {
+          inters.sort((a, b) => a.t - b.t);
+          if (cur.length >= 2) segments.push(cur);
+          cur = [];
+          segments.push([inters[0].pt, inters[1].pt]);
+        } else {
+          if (cur.length >= 2) segments.push(cur);
+          cur = [];
+        }
+      }
+    }
+    if (cur.length >= 2) segments.push(cur);
+    return segments;
+  };
+
   // Ensure 3D engine script & stylesheet are loaded
   useEffect(() => {
     if (typeof Cesium !== "undefined") {
@@ -685,50 +784,50 @@ export function CesiumDigitalTwinViewer({
         return;
       }
 
+      const activePoly = getActivePolygon();
       console.log(`[DT] render3DRoads: rendering ${roads.length} road ways (visible=${visible})`);
 
-      const activePoly = getActivePolygon();
       roads.forEach((road) => {
-        const coords = road.geometry?.coordinates as number[][];
+        const coords = road.geometry?.coordinates;
         if (!coords || coords.length < 2) return;
 
-        // Clip polyline so only segments strictly inside the selected polygon are kept
-        const sublines = clipLineStringToPolygon(coords, activePoly);
-        if (!sublines || sublines.length === 0) return;
+        // Clip road line segments strictly inside the selected polygon
+        const clippedSegments = clipPolylineToPolygon(coords as [number, number][], activePoly);
+        if (clippedSegments.length === 0) return;
 
-        sublines.forEach((subline) => {
-          const flatPositions = subline.flat();
+        const rType = road.properties?.road_type || "residential";
+        const isMajor = road.properties?.is_major ?? ["motorway", "trunk", "primary", "secondary"].includes(rType);
+        const access = road.properties?.accessibility || "open";
+        const risk = road.properties?.flood_risk || 0;
+        const widthPx = road.properties?.width_px;
+
+        // Color: flooded = dark red, major = bright red, minor = muted red/salmon
+        let strokeColor: string;
+        let lineWidth: number;
+
+        if (access === "flooded" || risk >= 0.7) {
+          strokeColor = "#dc2626";   // Dark red — flooded
+          lineWidth = widthPx ?? 6.0;
+        } else if (rType === "motorway") {
+          strokeColor = "#ff4444";   // Bright red
+          lineWidth = widthPx ?? 7.0;
+        } else if (rType === "trunk" || rType === "primary") {
+          strokeColor = "#ef4444";   // Red 500
+          lineWidth = widthPx ?? 5.5;
+        } else if (rType === "secondary" || rType === "tertiary") {
+          strokeColor = "#f87171";   // Red 400
+          lineWidth = widthPx ?? 4.0;
+        } else if (rType === "residential" || rType === "unclassified") {
+          strokeColor = "#fca5a5";   // Red 300
+          lineWidth = widthPx ?? 2.5;
+        } else {
+          strokeColor = "#fecaca";   // Red 200 — tracks, paths
+          lineWidth = widthPx ?? 1.5;
+        }
+
+        clippedSegments.forEach((seg) => {
+          const flatPositions = seg.flat();
           if (flatPositions.length < 4) return;
-
-          const rType = road.properties?.road_type || "residential";
-          const isMajor = road.properties?.is_major ?? ["motorway", "trunk", "primary", "secondary"].includes(rType);
-          const access = road.properties?.accessibility || "open";
-          const risk = road.properties?.flood_risk || 0;
-          const widthPx = road.properties?.width_px;
-
-          // Color: flooded = dark red, major = bright red, minor = muted red/salmon
-          let strokeColor: string;
-          let lineWidth: number;
-
-          if (access === "flooded" || risk >= 0.7) {
-            strokeColor = "#dc2626";   // Dark red — flooded
-            lineWidth = widthPx ?? 6.0;
-          } else if (rType === "motorway") {
-            strokeColor = "#ff4444";   // Bright red
-            lineWidth = widthPx ?? 7.0;
-          } else if (rType === "trunk" || rType === "primary") {
-            strokeColor = "#ef4444";   // Red 500
-            lineWidth = widthPx ?? 5.5;
-          } else if (rType === "secondary" || rType === "tertiary") {
-            strokeColor = "#f87171";   // Red 400
-            lineWidth = widthPx ?? 4.0;
-          } else if (rType === "residential" || rType === "unclassified") {
-            strokeColor = "#fca5a5";   // Red 300
-            lineWidth = widthPx ?? 2.5;
-          } else {
-            strokeColor = "#fecaca";   // Red 200 — tracks, paths
-            lineWidth = widthPx ?? 1.5;
-          }
 
           const ent = viewer.entities.add({
             name: `🛣️ ${isMajor ? "Road" : "Path"}: ${road.properties?.name || rType}`,
@@ -766,61 +865,61 @@ export function CesiumDigitalTwinViewer({
         return;
       }
 
+      const activePoly = getActivePolygon();
       console.log(`[DT] render3DRivers: rendering ${rivers.length} waterway ways (visible=${visible})`);
 
-      const activePoly = getActivePolygon();
       rivers.forEach((river) => {
-        const coords = river.geometry?.coordinates as number[][];
+        const coords = river.geometry?.coordinates;
         if (!coords || coords.length < 2) return;
 
-        // Clip river polyline so only segments strictly inside the selected polygon are kept
-        const sublines = clipLineStringToPolygon(coords, activePoly);
-        if (!sublines || sublines.length === 0) return;
+        // Clip river line segments strictly inside the selected polygon
+        const clippedSegments = clipPolylineToPolygon(coords as [number, number][], activePoly);
+        if (clippedSegments.length === 0) return;
 
-        sublines.forEach((subline) => {
-          const flatPositions = subline.flat();
+        const props = (river.properties as any) || {};
+        const wType = (props.waterway_type || props.waterway || "stream").toLowerCase();
+        const isWaterBody = Boolean(
+          props.is_water_body ||
+          ["water", "lake", "reservoir", "pond", "basin", "riverbank", "lagoon", "oxbow"].includes(wType)
+        );
+        const isMainRiver = Boolean(props.is_main_river) || wType === "river" || wType === "canal";
+        const widthM = props.width_m;
+
+        let strokeColor: string;
+        let lineWidth: number;
+        let alpha: number;
+        let displayName: string;
+
+        if (isWaterBody) {
+          strokeColor = "#06b6d4";  // Cyan — lakes, reservoirs, ponds
+          lineWidth = widthM ?? 9.0;
+          alpha = 0.88;
+          displayName = `💧 ${props.name || "Water Body"}`;
+        } else if (wType === "river") {
+          strokeColor = "#1d4ed8";  // Deep blue — main rivers
+          lineWidth = widthM ?? 7.0;
+          alpha = 0.95;
+          displayName = `🌊 River: ${props.name || "River"}`;
+        } else if (wType === "canal") {
+          strokeColor = "#2563eb";  // Blue — canals
+          lineWidth = widthM ?? 5.5;
+          alpha = 0.92;
+          displayName = `🌊 Canal: ${props.name || "Canal"}`;
+        } else if (wType === "stream") {
+          strokeColor = "#3b82f6";  // Blue 500 — streams
+          lineWidth = widthM ?? 3.5;
+          alpha = 0.88;
+          displayName = `〰️ Stream: ${props.name || "Stream"}`;
+        } else {
+          strokeColor = "#60a5fa";  // Light blue — drains/ditches
+          lineWidth = widthM ?? 2.0;
+          alpha = 0.80;
+          displayName = `〰️ ${wType}: ${props.name || "Waterway"}`;
+        }
+
+        clippedSegments.forEach((seg) => {
+          const flatPositions = seg.flat();
           if (flatPositions.length < 4) return;
-
-          const props = (river.properties as any) || {};
-          const wType = (props.waterway_type || props.waterway || "stream").toLowerCase();
-          const isWaterBody = Boolean(
-            props.is_water_body ||
-            ["water", "lake", "reservoir", "pond", "basin", "riverbank", "lagoon", "oxbow"].includes(wType)
-          );
-          const isMainRiver = Boolean(props.is_main_river) || wType === "river" || wType === "canal";
-          const widthM = props.width_m;
-
-          let strokeColor: string;
-          let lineWidth: number;
-          let alpha: number;
-          let displayName: string;
-
-          if (isWaterBody) {
-            strokeColor = "#06b6d4";  // Cyan — lakes, reservoirs, ponds
-            lineWidth = widthM ?? 9.0;
-            alpha = 0.88;
-            displayName = `💧 ${props.name || "Water Body"}`;
-          } else if (wType === "river") {
-            strokeColor = "#1d4ed8";  // Deep blue — main rivers
-            lineWidth = widthM ?? 7.0;
-            alpha = 0.95;
-            displayName = `🌊 River: ${props.name || "River"}`;
-          } else if (wType === "canal") {
-            strokeColor = "#2563eb";  // Blue — canals
-            lineWidth = widthM ?? 5.5;
-            alpha = 0.92;
-            displayName = `🌊 Canal: ${props.name || "Canal"}`;
-          } else if (wType === "stream") {
-            strokeColor = "#3b82f6";  // Blue 500 — streams
-            lineWidth = widthM ?? 3.5;
-            alpha = 0.88;
-            displayName = `〰️ Stream: ${props.name || "Stream"}`;
-          } else {
-            strokeColor = "#60a5fa";  // Light blue — drains/ditches
-            lineWidth = widthM ?? 2.0;
-            alpha = 0.80;
-            displayName = `〰️ ${wType}: ${props.name || "Waterway"}`;
-          }
 
           const ent = viewer.entities.add({
             name: displayName,
@@ -856,6 +955,7 @@ export function CesiumDigitalTwinViewer({
       buildingEntitiesRef.current = [];
 
       const activePoly = getActivePolygon();
+
       buildings.forEach((building) => {
         const source = building.geometry?.coordinates;
         if (!source) return;
@@ -865,9 +965,8 @@ export function CesiumDigitalTwinViewer({
         polygons.forEach((rings) => {
           const outer = rings[0];
           if (!outer || outer.length < 4) return;
-          // Only render building if inside the selected area boundary line
+          // Only render buildings situated inside the selected polygon
           if (!isPointInPolygon(outer[0][1], outer[0][0], activePoly)) return;
-
           const holes = rings.slice(1).map((ring) => new Cesium.PolygonHierarchy(Cesium.Cartesian3.fromDegreesArray(ring.flat())));
           const height = Math.max(3, building.properties?.height_m || 6);
           const entity = viewer.entities.add({
@@ -882,6 +981,7 @@ export function CesiumDigitalTwinViewer({
               distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 12000),
             },
           });
+          buildingEntitiesRef.current.push(entity);
         });
       });
     } finally {
@@ -1585,179 +1685,97 @@ export function CesiumDigitalTwinViewer({
   };
 
 
-  // ─── 📐 EXACT POLYGON UTILITIES & CLIPPING ───
-  // Computes signed area to ensure counter-clockwise (CCW) winding order required by Cesium.ClippingPolygon
-  const ensureCCW = (coords: [number, number][]): [number, number][] => {
-    let area = 0;
-    const n = coords.length;
-    for (let i = 0; i < n; i++) {
-      const [lat1, lng1] = coords[i];
-      const [lat2, lng2] = coords[(i + 1) % n];
-      area += lng1 * lat2 - lng2 * lat1;
-    }
-    return area < 0 ? [...coords].reverse() : coords;
-  };
-
-  // Line segment intersection: (p1 -> p2) with polygon boundary segment (e1 -> e2)
-  const segmentIntersection = (
-    p1: number[],
-    p2: number[],
-    e1: [number, number],
-    e2: [number, number]
-  ): { t: number; point: number[] } | null => {
-    const x1 = p1[0], y1 = p1[1]; // lng, lat
-    const x2 = p2[0], y2 = p2[1];
-    const x3 = e1[1], y3 = e1[0]; // poly is [lat, lng] -> [lng, lat]
-    const x4 = e2[1], y4 = e2[0];
-
-    const denom = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1);
-    if (Math.abs(denom) < 1e-12) return null;
-
-    const ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denom;
-    const ub = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denom;
-
-    if (ua >= 0 && ua <= 1 && ub >= 0 && ub <= 1) {
-      return {
-        t: ua,
-        point: [x1 + ua * (x2 - x1), y1 + ua * (y2 - y1)],
-      };
-    }
-    return null;
-  };
-
-  // Clips a polyline [[lng, lat], ...] to only keep segments inside the active polygon [[lat, lng], ...]
-  // This guarantees NO road or river is rendered outside the boundary line!
-  const clipLineStringToPolygon = (
-    coords: number[][],
-    poly: [number, number][]
-  ): number[][][] => {
-    if (!poly || poly.length < 3 || !coords || coords.length < 2) return [coords];
-
-    const sublines: number[][][] = [];
-    let currentSubline: number[][] = [];
-
-    for (let i = 0; i < coords.length - 1; i++) {
-      const p1 = coords[i];
-      const p2 = coords[i + 1];
-      const in1 = isPointInPolygon(p1[1], p1[0], poly);
-      const in2 = isPointInPolygon(p2[1], p2[0], poly);
-
-      const hits: { t: number; point: number[] }[] = [];
-      for (let j = 0; j < poly.length; j++) {
-        const e1 = poly[j];
-        const e2 = poly[(j + 1) % poly.length];
-        const hit = segmentIntersection(p1, p2, e1, e2);
-        if (hit) hits.push(hit);
-      }
-      hits.sort((a, b) => a.t - b.t);
-
-      if (in1 && in2) {
-        if (currentSubline.length === 0) currentSubline.push(p1);
-        currentSubline.push(p2);
-      } else if (in1 && !in2) {
-        if (currentSubline.length === 0) currentSubline.push(p1);
-        if (hits.length > 0) currentSubline.push(hits[0].point);
-        if (currentSubline.length >= 2) sublines.push(currentSubline);
-        currentSubline = [];
-      } else if (!in1 && in2) {
-        if (hits.length > 0) {
-          currentSubline = [hits[hits.length - 1].point, p2];
-        } else {
-          currentSubline = [p2];
-        }
-      } else {
-        if (hits.length >= 2) {
-          sublines.push([hits[0].point, hits[1].point]);
-        }
-        currentSubline = [];
-      }
-    }
-    if (currentSubline.length >= 2) {
-      sublines.push(currentSubline);
-    }
-    return sublines;
-  };
-
-  // ─── AREA CLIPPING: Show ONLY the selected polygon area, completely clip outside terrain ───
+  // ─── AREA CLIPPING: Restrict globe strictly to monitored polygon (removes everything outside) ───
   const updateWhiteMask = (polyCoords: [number, number][], _centerLon: number, _centerLat: number) => {
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed()) return;
 
-    // Clear any old mask entities (borders, etc.)
+    // Clear any previous clipping polygons on the globe
+    if (viewer.scene.globe.clippingPolygons) {
+      try {
+        viewer.scene.globe.clippingPolygons.enabled = false;
+        viewer.scene.globe.clippingPolygons = undefined;
+      } catch (e) {}
+    }
+
+    // Clear any old mask / border entities
     maskEntitiesRef.current.forEach((ent) => {
       try { viewer.entities.remove(ent); } catch (e) {}
     });
     maskEntitiesRef.current = [];
 
     if (!polyCoords || polyCoords.length < 3) {
-      try {
-        if (viewer.scene?.globe) {
-          viewer.scene.globe.clippingPolygons = undefined;
-          viewer.scene.globe.cartographicLimitRectangle = Cesium.Rectangle.MAX_VALUE;
-        }
-      } catch (e) {}
+      // No polygon — show full globe without any clip
+      try { viewer.scene.globe.cartographicLimitRectangle = Cesium.Rectangle.MAX_VALUE; } catch (e) {}
       return;
     }
 
-    const ccwCoords = ensureCCW(polyCoords);
+    // Ensure polygon positions do not have duplicate closing vertex for ClippingPolygon
+    const cleanCoords = [...polyCoords];
+    if (
+      cleanCoords.length > 3 &&
+      cleanCoords[0][0] === cleanCoords[cleanCoords.length - 1][0] &&
+      cleanCoords[0][1] === cleanCoords[cleanCoords.length - 1][1]
+    ) {
+      cleanCoords.pop();
+    }
 
-    // 1. Exact polygon clipping on Globe using Cesium.ClippingPolygonCollection
-    // Setting inverse: true clips all terrain and imagery OUTSIDE the polygon boundary line!
-    let clippingSuccess = false;
-    if (typeof Cesium.ClippingPolygonCollection !== "undefined" && typeof Cesium.ClippingPolygon !== "undefined") {
+    // 1. Precise 3D Terrain & Satellite Imagery clipping using Cesium's ClippingPolygonCollection.
+    //    inverse = true clips away all terrain and imagery OUTSIDE the selected polygon!
+    let clippingApplied = false;
+    if (
+      typeof Cesium !== "undefined" &&
+      Cesium.ClippingPolygonCollection &&
+      Cesium.ClippingPolygon &&
+      (!Cesium.ClippingPolygonCollection.isSupported || Cesium.ClippingPolygonCollection.isSupported(viewer.scene))
+    ) {
       try {
-        const flatPositions: number[] = [];
-        ccwCoords.forEach(([lat, lng]) => {
-          flatPositions.push(lng, lat);
+        const cartesianPositions = cleanCoords.map(([lat, lng]) =>
+          Cesium.Cartesian3.fromDegrees(lng, lat)
+        );
+        const clipPoly = new Cesium.ClippingPolygon({
+          positions: cartesianPositions,
         });
-
-        const clippingPolygon = new Cesium.ClippingPolygon({
-          positions: Cesium.Cartesian3.fromDegreesArray(flatPositions),
+        const clipColl = new Cesium.ClippingPolygonCollection({
+          polygons: [clipPoly],
+          enabled: true,
+          inverse: true, // CLIPS AWAY EVERYTHING OUTSIDE THE SELECTED POLYGON!
         });
-
-        viewer.scene.globe.clippingPolygons = new Cesium.ClippingPolygonCollection({
-          polygons: [clippingPolygon],
-          inverse: true, // Show ONLY the inside; clip everything outside!
-        });
-        clippingSuccess = true;
-      } catch (clipErr) {
-        console.warn("[DT] globe.clippingPolygons error, fallback to bbox limit:", clipErr);
+        viewer.scene.globe.clippingPolygons = clipColl;
+        clippingApplied = true;
+      } catch (e) {
+        console.warn("[DT] ClippingPolygonCollection error:", e);
       }
     }
 
-    // 2. Remove rectangular box constraint so the only boundary is the exact polygon line
-    const lats = polyCoords.map(([la]) => la);
-    const lngs = polyCoords.map(([, lo]) => lo);
+    // 2. Set cartographicLimitRectangle tightly around the polygon so Cesium only loads tiles for this area
+    const lats = cleanCoords.map(([la]) => la);
+    const lngs = cleanCoords.map(([, lo]) => lo);
     const minLat = Math.min(...lats);
     const maxLat = Math.max(...lats);
     const minLng = Math.min(...lngs);
     const maxLng = Math.max(...lngs);
+    const pad = clippingApplied ? 0.005 : 0.0005;
 
-    if (clippingSuccess) {
-      try {
-        viewer.scene.globe.cartographicLimitRectangle = Cesium.Rectangle.MAX_VALUE;
-      } catch (e) {}
-    } else {
-      // Fallback if browser/GPU doesn't support WebGL 2 clipping polygons
-      try {
-        viewer.scene.globe.cartographicLimitRectangle = Cesium.Rectangle.fromDegrees(
-          minLng, minLat, maxLng, maxLat
-        );
-      } catch (e) {}
-    }
+    try {
+      viewer.scene.globe.cartographicLimitRectangle = Cesium.Rectangle.fromDegrees(
+        minLng - pad, minLat - pad, maxLng + pad, maxLat + pad
+      );
+    } catch (e) {}
 
-    // 3. Crisp cyan/blue boundary line around the exact selected area
-    const holePositions: number[] = [];
-    polyCoords.forEach(([lat, lng]) => {
-      holePositions.push(lng, lat);
+    // 3. Crisp border polyline around the exact boundary of the selected area
+    const borderPositions: number[] = [];
+    cleanCoords.forEach(([lat, lng]) => {
+      borderPositions.push(lng, lat);
     });
-    // Close the polygon boundary line
-    holePositions.push(polyCoords[0][1], polyCoords[0][0]);
+    // Ensure the border polyline is closed
+    borderPositions.push(cleanCoords[0][1], cleanCoords[0][0]);
 
     try {
       const borderEnt = viewer.entities.add({
+        name: "Selected Area Boundary",
         polyline: {
-          positions: Cesium.Cartesian3.fromDegreesArray(holePositions),
+          positions: Cesium.Cartesian3.fromDegreesArray(borderPositions),
           width: 3.5,
           material: new Cesium.PolylineOutlineMaterialProperty({
             color: Cesium.Color.fromCssColorString("#38bdf8"),
@@ -1770,7 +1788,7 @@ export function CesiumDigitalTwinViewer({
       });
       maskEntitiesRef.current.push(borderEnt);
     } catch (e) {
-      console.warn("[DT] Border line error:", e);
+      console.warn("[DT] Border entity error:", e);
     }
   };
 
@@ -2272,7 +2290,13 @@ export function CesiumDigitalTwinViewer({
       srtmLayerRef.current = null;
       if (viewer && !viewer.isDestroyed()) {
         // Reset globe limit so next mount starts fresh
-        try { viewer.scene.globe.cartographicLimitRectangle = Cesium.Rectangle.MAX_VALUE; } catch (e) {}
+        try {
+          if (viewer.scene.globe.clippingPolygons) {
+            viewer.scene.globe.clippingPolygons.enabled = false;
+            viewer.scene.globe.clippingPolygons = undefined;
+          }
+          viewer.scene.globe.cartographicLimitRectangle = Cesium.Rectangle.MAX_VALUE;
+        } catch (e) {}
         viewer.destroy();
         viewerRef.current = null;
         setCesiumViewer(null);
