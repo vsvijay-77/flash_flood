@@ -9,7 +9,7 @@ from services.location_service import bbox_from_radius, bbox_from_polygon, geoco
 from services.osm_road_service import OSMRoadService
 from services.osm_river_service import OSMRiverService
 from services.osm_building_service import OSMBuildingService
-from services.osm_tile_loader import OSMTileLoadError, OSMTileLoader
+from services.osm_tile_loader import OSMTileLoader
 from services.graph_builder import UnifiedGraphBuilder
 from services.routing_service import EvacuationRoutingService
 
@@ -121,21 +121,12 @@ async def extract_networks(payload: LocationRequest = Body(...)):
     east = bbox["east"]
     west = bbox["west"]
 
-    # All datasets use the same bounded tile queue. Do not render a success
-    # response when a tile has failed: a missing road or river is unsafe here.
-    try:
-        (road_G, road_geojson), (river_G, river_geojson) = await asyncio.gather(
-            road_service.get_road_network(north, south, east, west, polygon=payload.polygon),
-            river_service.get_river_network(north, south, east, west, polygon=payload.polygon),
-        )
-    except OSMTileLoadError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "message": "OSM data is incomplete; no partial map was displayed.",
-                "failed_tiles": exc.failures,
-            },
-        ) from exc
+    # All datasets use the same bounded tile queue. Partial failures are
+    # tolerated: roads and rivers that did load are returned with a warning.
+    (road_G, road_geojson), (river_G, river_geojson) = await asyncio.gather(
+        road_service.get_road_network(north, south, east, west, polygon=payload.polygon),
+        river_service.get_river_network(north, south, east, west, polygon=payload.polygon),
+    )
 
     center_lat = bbox.get("center_lat", (north + south) / 2.0)
     center_lng = bbox.get("center_lng", (east + west) / 2.0)

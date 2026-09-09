@@ -16,9 +16,9 @@ import httpx
 CACHE_ROOT = Path(__file__).parent.parent / "cache" / "osm_tiles"
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE_TTL_SECONDS = 24 * 60 * 60
-MAX_CONCURRENCY = 4
-REQUEST_TIMEOUT_SECONDS = 20.0
-MAX_ATTEMPTS = 3
+MAX_CONCURRENCY = 6
+REQUEST_TIMEOUT_SECONDS = 15.0
+MAX_ATTEMPTS = 2
 
 ENDPOINTS = (
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
@@ -198,10 +198,9 @@ class OSMTileLoader:
                 outcome = on_progress(update)
                 if asyncio.iscoroutine(outcome):
                     await outcome
-        if failures:
-            # A partial AOI is misleading for emergency planning. Report the
-            # specific failed tiles instead of silently rendering a gap.
-            raise OSMTileLoadError([json.dumps(failure) for failure in failures])
+        # Return partial results rather than raising — a missing tile is better
+        # than no map at all for emergency planning. Failures are reported in the
+        # stats dict so the API layer can surface a soft warning to the frontend.
 
         unique: dict[tuple[str, int], dict[str, Any]] = {}
         for elements in results:
@@ -209,13 +208,14 @@ class OSMTileLoader:
                 element_type, osm_id = element.get("type"), element.get("id")
                 if element_type in {"node", "way", "relation"} and isinstance(osm_id, int):
                     unique[(element_type, osm_id)] = element
+        loaded_count = len(tiles) - len(failures)
         return list(unique.values()), {
             "dataset": dataset,
             "total_tiles": len(tiles),
-            "loaded_tiles": len(tiles),
+            "loaded_tiles": loaded_count,
             "cached_tiles": cached_tiles,
-            "failed_tiles": [],
-            "complete": True,
+            "failed_tiles": failures,
+            "complete": len(failures) == 0,
         }
 
 

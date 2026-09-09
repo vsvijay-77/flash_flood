@@ -1111,7 +1111,7 @@ export function CesiumDigitalTwinViewer({
       }
     } catch (err) {
       console.error("Failed to extract road/river networks:", err);
-      toast.error("OSM data was incomplete — paths and rivers were kept visible while tiles retry");
+      toast.error("Could not load roads/rivers — check your internet connection or try a different area");
     } finally {
       window.clearTimeout(timeout);
       if (requestId === networkRequestRef.current) {
@@ -2128,9 +2128,18 @@ export function CesiumDigitalTwinViewer({
     // Refresh the white outer mask around the new active polygon
     updateWhiteMask(polyCoords, longitude, latitude);
 
+    // Reset network state so the new area triggers a fresh API load
+    networksLoadedRef.current = false;
+    lastViewportBboxRef.current = "";
+
+    const onFlyComplete = () => {
+      isInFlightRef.current = false;
+      scheduleSelectedAreaLoad();
+    };
+
     isInFlightRef.current = true;
     if (viewMode === "flat") {
-      switchToFlatView().finally(() => { isInFlightRef.current = false; });
+      switchToFlatView().finally(onFlyComplete);
     } else if (viewMode === "topdown") {
       viewer.camera.flyTo({
         destination: Cesium.Cartesian3.fromDegrees(longitude, latitude, 8500),
@@ -2140,8 +2149,8 @@ export function CesiumDigitalTwinViewer({
           roll: 0.0,
         },
         duration: 1.8,
-        complete: () => { isInFlightRef.current = false; },
-        cancel: () => { isInFlightRef.current = false; },
+        complete: onFlyComplete,
+        cancel: onFlyComplete,
       });
     } else {
       viewer.camera.flyTo({
@@ -2152,8 +2161,8 @@ export function CesiumDigitalTwinViewer({
           roll: 0.0,
         },
         duration: 1.8,
-        complete: () => { isInFlightRef.current = false; },
-        cancel: () => { isInFlightRef.current = false; },
+        complete: onFlyComplete,
+        cancel: onFlyComplete,
       });
     }
   }, [latitude, longitude, areaName, polygon]);
@@ -2329,9 +2338,14 @@ export function CesiumDigitalTwinViewer({
             localStorage.removeItem(networksStorageKey);
           }
         } catch (e) {}
-        // The intro flight is still in progress. Its completion handler starts
-        // the one selected-area request, avoiding a competing center-radius
-        // request here.
+        // No valid cache: if the intro flight already completed (or no flight is
+        // in progress), trigger a fresh load now. The intro flight's complete
+        // callback also calls scheduleSelectedAreaLoad, but if the component
+        // mounts after an area change or the flight has already finished, this
+        // fallback ensures networks are always loaded.
+        if (!networksLoadedRef.current && !isInFlightRef.current) {
+          scheduleSelectedAreaLoad();
+        }
       }, 800);
       return () => clearTimeout(timer);
     }
