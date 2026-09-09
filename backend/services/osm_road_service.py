@@ -7,8 +7,8 @@ import hashlib
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import networkx as nx
-import httpx
-from services.location_service import haversine_distance_m, point_in_polygon
+from services.location_service import bbox_from_radius, haversine_distance_m, point_in_polygon
+from services.osm_tile_loader import osm_tile_loader
 
 CACHE_DIR = Path(__file__).parent.parent / "cache" / "roads"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,46 +39,47 @@ class OSMRoadService:
         hash_val = hashlib.md5(key_str.encode()).hexdigest()
         return CACHE_DIR / f"{hash_val}.json"
 
+    def _load_cached_network(self, cache_file: Path, polygon: Optional[List[List[float]]] = None) -> Optional[Tuple[nx.DiGraph, Dict[str, Any]]]:
+        """Loads a cached full network and scopes its visible features to a polygon."""
+        if not cache_file.exists():
+            return None
+        try:
+            with open(cache_file, "r") as f:
+                cached = json.load(f)
+            geojson = cached["geojson"]
+            if polygon and len(polygon) >= 3:
+                geojson = {
+                    **geojson,
+                    "features": [
+                        feature for feature in geojson.get("features", [])
+                        if any(
+                            point_in_polygon(lat, lng, polygon)
+                            for lng, lat in feature.get("geometry", {}).get("coordinates", [])
+                        )
+                    ],
+                }
+                geojson["metadata"] = {
+                    **geojson.get("metadata", {}),
+                    "total_edges": len(geojson["features"]),
+                }
+            return self._reconstruct_graph(cached), geojson
+        except Exception as e:
+            print(f"Road cache read error: {e}")
+            return None
+
     async def fetch_road_elements_overpass(
         self, north: float, south: float, east: float, west: float
     ) -> List[Dict[str, Any]]:
-        """Queries Overpass API for ALL road/path types in the bbox."""
-        # Broad query: includes all highway types for complete coverage
-        query = f"""
-        [out:json][timeout:15];
-        (
-          way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|track|path|footway|cycleway|living_street|road)$"]({south},{west},{north},{east});
-        );
-        out body;
-        >;
-        out skel qt;
-        """
-        endpoints = [
-            "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
-            "https://overpass.osm.ch/api/interpreter",
-            "https://overpass-api.de/api/interpreter",
-            "https://overpass.kumi.systems/api/interpreter",
-        ]
-
-        async def _fetch(url: str):
-            try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.post(url, data={"data": query})
-                    if resp.status_code == 200:
-                        return resp.json().get("elements", [])
-            except Exception:
-                return None
-            return None
-
-        tasks = [asyncio.create_task(_fetch(u)) for u in endpoints]
-        for coro in asyncio.as_completed(tasks):
-            res = await coro
-            if res is not None and len(res) > 0:
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
-                return res
-        return []
+        """Loads complete roads/paths through the shared tile cache and queue."""
+        elements, _ = await osm_tile_loader.load(
+            "roads",
+            north,
+            south,
+            east,
+            west,
+            'way["highway"]{bbox};relation["highway"]{bbox}',
+        )
+        return elements
 
     async def get_road_network(
         self,
@@ -90,14 +91,23 @@ class OSMRoadService:
     ) -> Tuple[nx.DiGraph, Dict[str, Any]]:
         """Downloads road network for the bbox, builds DiGraph + full-way GeoJSON."""
         cache_file = self._cache_key(north, south, east, west)
-        if cache_file.exists() and not polygon:
-            try:
-                with open(cache_file, "r") as f:
-                    cached = json.load(f)
-                    G = self._reconstruct_graph(cached)
-                    return G, cached["geojson"]
-            except Exception as e:
-                print(f"Road cache read error: {e}")
+        cached = self._load_cached_network(cache_file, polygon)
+        if cached:
+            return cached
+
+        # Selected polygons are commonly drawn from a previously loaded 5 km
+        # area. Reuse that complete area cache and filter it locally instead of
+        # waiting for a fresh third-party Overpass response.
+        if polygon and len(polygon) >= 3:
+            center_lat = sum(point[0] for point in polygon) / len(polygon)
+            center_lng = sum(point[1] for point in polygon) / len(polygon)
+            broad_bbox = bbox_from_radius(center_lat, center_lng, 5.0)
+            broad_cache = self._load_cached_network(
+                self._cache_key(broad_bbox["north"], broad_bbox["south"], broad_bbox["east"], broad_bbox["west"]),
+                polygon,
+            )
+            if broad_cache:
+                return broad_cache
 
         elements = await self.fetch_road_elements_overpass(north, south, east, west)
         if not elements:
@@ -133,6 +143,13 @@ class OSMRoadService:
 
             if len(coords) < 2:
                 continue
+
+            # The Overpass request is necessarily rectangular, but the Digital
+            # Twin is defined by the user's selected polygon. Do not return a
+            # visual path unless it actually belongs to that selected area.
+            if polygon and len(polygon) >= 3:
+                if not any(point_in_polygon(lat, lng, polygon) for lng, lat in coords):
+                    continue
 
             name = tags.get("name", "")
             speed = HIGHWAY_SPEEDS.get(hw, 30)

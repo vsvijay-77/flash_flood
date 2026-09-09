@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Satellite imagery and Earth Engine analysis endpoints for disaster monitoring.
 Integrates Sentinel-1 SAR, Sentinel-2 optical, DEM, flood and landslide detection.
@@ -7,7 +9,6 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, Literal, List
 from datetime import datetime, date
-import ee
 import os
 from lib.auth import current_user
 from models.schemas import User
@@ -18,15 +19,23 @@ router = APIRouter(prefix="/satellite", tags=["satellite"])
 EE_PROJECT_ID = os.getenv("EE_PROJECT_ID", "formal-purpose-466115-i8")
 
 _ee_initialized = False
+ee = None
 
 def _ensure_ee():
-    global _ee_initialized
+    """Load Earth Engine only for satellite requests, never during API startup."""
+    global _ee_initialized, ee
+    if ee is None:
+        try:
+            import ee as earth_engine
+            ee = earth_engine
+        except Exception as exc:
+            raise HTTPException(503, f"Earth Engine client is unavailable: {exc}") from exc
     if not _ee_initialized:
         try:
             ee.Initialize(project=EE_PROJECT_ID)
             _ee_initialized = True
         except Exception as e:
-            print(f"Earth Engine initialization notice: {e}")
+            raise HTTPException(503, f"Earth Engine could not initialize: {e}") from e
 
 
 # ==========================================
@@ -102,6 +111,7 @@ class TileResponse(BaseModel):
 
 def create_aoi_geometry(aoi: AOIRequest) -> ee.Geometry:
     """Create Earth Engine geometry from AOI request"""
+    _ensure_ee()
     if aoi.polygon and len(aoi.polygon) >= 3:
         # Custom polygon
         coords = [[lng, lat] for lat, lng in aoi.polygon]

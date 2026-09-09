@@ -59,6 +59,30 @@ export interface RiverFeature {
   };
 }
 
+export interface BuildingFeature {
+  type: "Feature";
+  properties: {
+    id: string;
+    osm_type: "way" | "relation";
+    osm_id: number;
+    building: string;
+    name: string;
+    height_m: number;
+    height_source: string;
+  };
+  geometry: {
+    type: "Polygon" | "MultiPolygon";
+    coordinates: number[][][] | number[][][][];
+  };
+}
+
+export interface OsmLoadingStatus {
+  complete: boolean;
+  total_tiles: number;
+  loaded_tiles: number;
+  failed_tiles: unknown[];
+}
+
 export interface NetworkExtractionResponse {
   status: string;
   bbox: BoundingBox;
@@ -80,7 +104,23 @@ export interface NetworkExtractionResponse {
     total_nodes: number;
     total_edges: number;
   };
+  buildings?: {
+    geojson: {
+      type: "FeatureCollection";
+      features: BuildingFeature[];
+      metadata?: { total_buildings: number };
+    };
+    total_features: number;
+  };
+  osm_loading?: OsmLoadingStatus;
   shelters?: Shelter[];
+}
+
+export interface BuildingExtractionResponse {
+  status: string;
+  bbox: BoundingBox;
+  buildings: NonNullable<NetworkExtractionResponse["buildings"]>;
+  osm_loading?: OsmLoadingStatus;
 }
 
 export interface HighRiskZone {
@@ -144,8 +184,21 @@ export async function extractNetworks(params: {
   south?: number;
   east?: number;
   west?: number;
-}): Promise<NetworkExtractionResponse> {
-  return apiPost<NetworkExtractionResponse>("/geo/extract-networks", params);
+}, signal?: AbortSignal): Promise<NetworkExtractionResponse> {
+  return apiPost<NetworkExtractionResponse>("/geo/extract-networks", params, { signal });
+}
+
+export async function extractBuildings(params: {
+  lat?: number;
+  lng?: number;
+  radius_km?: number;
+  polygon?: number[][];
+  north?: number;
+  south?: number;
+  east?: number;
+  west?: number;
+}, signal?: AbortSignal): Promise<BuildingExtractionResponse> {
+  return apiPost<BuildingExtractionResponse>("/geo/extract-buildings", params, { signal });
 }
 
 export async function predictRisk(params: {

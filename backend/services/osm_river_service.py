@@ -7,8 +7,8 @@ import hashlib
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import networkx as nx
-import httpx
-from services.location_service import haversine_distance_m, point_in_polygon
+from services.location_service import bbox_from_radius, haversine_distance_m, point_in_polygon
+from services.osm_tile_loader import osm_tile_loader
 
 CACHE_DIR = Path(__file__).parent.parent / "cache" / "rivers"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -32,50 +32,47 @@ class OSMRiverService:
         hash_val = hashlib.md5(key_str.encode()).hexdigest()
         return CACHE_DIR / f"{hash_val}.json"
 
+    def _load_cached_network(self, cache_file: Path, polygon: Optional[List[List[float]]] = None) -> Optional[Tuple[nx.DiGraph, Dict[str, Any]]]:
+        """Loads a cached full water network and scopes it to a selected polygon."""
+        if not cache_file.exists():
+            return None
+        try:
+            with open(cache_file, "r") as f:
+                cached = json.load(f)
+            geojson = cached["geojson"]
+            if polygon and len(polygon) >= 3:
+                geojson = {
+                    **geojson,
+                    "features": [
+                        feature for feature in geojson.get("features", [])
+                        if any(
+                            point_in_polygon(lat, lng, polygon)
+                            for lng, lat in feature.get("geometry", {}).get("coordinates", [])
+                        )
+                    ],
+                }
+                geojson["metadata"] = {
+                    **geojson.get("metadata", {}),
+                    "total_edges": len(geojson["features"]),
+                }
+            return self._reconstruct_graph(cached), geojson
+        except Exception as e:
+            print(f"River cache read error: {e}")
+            return None
+
     async def fetch_waterway_elements_overpass(
         self, north: float, south: float, east: float, west: float
     ) -> List[Dict[str, Any]]:
-        """Queries Overpass API for ALL waterways and water bodies in bbox."""
-        query = f"""
-        [out:json][timeout:15];
-        (
-          way["waterway"~"^(river|stream|canal|drain|ditch|riverbank)$"]({south},{west},{north},{east});
-          way["natural"="water"]({south},{west},{north},{east});
-          way["water"]({south},{west},{north},{east});
-          way["landuse"~"^(reservoir|basin)$"]({south},{west},{north},{east});
-          relation["waterway"~"^(river|stream|canal)$"]({south},{west},{north},{east});
-          relation["natural"="water"]({south},{west},{north},{east});
-        );
-        out body;
-        >;
-        out skel qt;
-        """
-        endpoints = [
-            "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
-            "https://overpass.osm.ch/api/interpreter",
-            "https://overpass-api.de/api/interpreter",
-            "https://overpass.kumi.systems/api/interpreter",
-        ]
-
-        async def _fetch(url: str):
-            try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.post(url, data={"data": query})
-                    if resp.status_code == 200:
-                        return resp.json().get("elements", [])
-            except Exception:
-                return None
-            return None
-
-        tasks = [asyncio.create_task(_fetch(u)) for u in endpoints]
-        for coro in asyncio.as_completed(tasks):
-            res = await coro
-            if res is not None and len(res) > 0:
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
-                return res
-        return []
+        """Loads complete waterways through the shared tile cache and queue."""
+        elements, _ = await osm_tile_loader.load(
+            "waterways",
+            north,
+            south,
+            east,
+            west,
+            'way["waterway"]{bbox};relation["waterway"]{bbox};way["natural"="water"]{bbox};relation["natural"="water"]{bbox};way["water"]{bbox};way["landuse"~"^(reservoir|basin)$"]{bbox}',
+        )
+        return elements
 
     async def get_river_network(
         self,
@@ -87,14 +84,23 @@ class OSMRiverService:
     ) -> Tuple[nx.DiGraph, Dict[str, Any]]:
         """Downloads waterways for bbox, builds DiGraph + full-way GeoJSON."""
         cache_file = self._cache_key(north, south, east, west)
-        if cache_file.exists() and not polygon:
-            try:
-                with open(cache_file, "r") as f:
-                    cached = json.load(f)
-                    G = self._reconstruct_graph(cached)
-                    return G, cached["geojson"]
-            except Exception as e:
-                print(f"River cache read error: {e}")
+        cached = self._load_cached_network(cache_file, polygon)
+        if cached:
+            return cached
+
+        # Reuse an existing complete 5 km area cache whenever it contains the
+        # selected polygon. This avoids a slow live Overpass request on repeat
+        # Digital Twin visits while retaining every waterway in the area.
+        if polygon and len(polygon) >= 3:
+            center_lat = sum(point[0] for point in polygon) / len(polygon)
+            center_lng = sum(point[1] for point in polygon) / len(polygon)
+            broad_bbox = bbox_from_radius(center_lat, center_lng, 5.0)
+            broad_cache = self._load_cached_network(
+                self._cache_key(broad_bbox["north"], broad_bbox["south"], broad_bbox["east"], broad_bbox["west"]),
+                polygon,
+            )
+            if broad_cache:
+                return broad_cache
 
         elements = await self.fetch_waterway_elements_overpass(north, south, east, west)
         if not elements:
@@ -138,6 +144,12 @@ class OSMRiverService:
 
             if len(coords) < 2:
                 continue
+
+            # Keep the visual water network scoped to the selected polygon,
+            # rather than returning every waterway in its enclosing bbox.
+            if polygon and len(polygon) >= 3:
+                if not any(point_in_polygon(lat, lng, polygon) for lng, lat in coords):
+                    continue
 
             # Determine waterway type and classification
             ww_type = (

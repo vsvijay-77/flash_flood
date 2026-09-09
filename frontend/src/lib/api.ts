@@ -18,6 +18,7 @@ export class ApiError extends Error {
 }
 
 type JsonBody = unknown;
+type RequestOptions = { signal?: AbortSignal };
 
 // Credential endpoints must never trigger a refresh-and-retry: a 401 from them is the
 // real answer (bad password, expired refresh cookie), and retrying would loop.
@@ -43,7 +44,7 @@ async function refreshSession(): Promise<boolean> {
 }
 
 
-async function send(method: string, path: string, body?: JsonBody): Promise<Response> {
+async function send(method: string, path: string, body?: JsonBody, options?: RequestOptions): Promise<Response> {
   const { data: { session } } = await supabase.auth.getSession();
   const headers: Record<string, string> = body === undefined ? {} : { "Content-Type": "application/json" };
   
@@ -55,18 +56,19 @@ async function send(method: string, path: string, body?: JsonBody): Promise<Resp
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: options?.signal,
   });
 }
 
-async function request<T>(method: string, path: string, body?: JsonBody): Promise<T> {
-  let res = await send(method, path, body);
+async function request<T>(method: string, path: string, body?: JsonBody, options?: RequestOptions): Promise<T> {
+  let res = await send(method, path, body, options);
 
   // The access cookie is short-lived; the refresh cookie outlives it by weeks. When the
   // access token lapses mid-session, renew it silently and replay the request once so the
   // user is never kicked back to /login while still holding a valid refresh cookie.
   if (res.status === 401 && !NO_REFRESH.includes(path)) {
     if (await refreshSession()) {
-      res = await send(method, path, body);
+      res = await send(method, path, body, options);
     }
   }
 
@@ -83,7 +85,7 @@ async function request<T>(method: string, path: string, body?: JsonBody): Promis
 // The response type is yours to declare: nothing infers across the Python boundary, so a
 // TS interface here mirrors the endpoint's Pydantic model by hand — keep the two in sync.
 export const apiGet = <T>(path: string) => request<T>("GET", path);
-export const apiPost = <T>(path: string, body?: JsonBody) => request<T>("POST", path, body ?? null);
+export const apiPost = <T>(path: string, body?: JsonBody, options?: RequestOptions) => request<T>("POST", path, body ?? null, options);
 export const apiPut = <T>(path: string, body?: JsonBody) => request<T>("PUT", path, body ?? null);
 export const apiPatch = <T>(path: string, body?: JsonBody) =>
   request<T>("PATCH", path, body ?? null);

@@ -47,12 +47,14 @@ import { toast } from "sonner";
 import { generateCirclePolygon } from "@/lib/gisUtils";
 import {
   extractNetworks,
+  extractBuildings,
   calculateEvacuationRoute,
   predictRisk,
 } from "../../lib/routingApi";
 import type {
   RoadFeature,
   RiverFeature,
+  BuildingFeature,
   BoundingBox,
   EvacuationRouteResponse,
   HighRiskZone,
@@ -159,11 +161,15 @@ export function CesiumDigitalTwinViewer({
   // ─── 🛣️ REAL ROAD NETWORK, 🌊 RIVERS & 🚨 EVACUATION ROUTING ───
   const roadEntitiesRef = useRef<any[]>([]);
   const riverEntitiesRef = useRef<any[]>([]);
+  const buildingEntitiesRef = useRef<any[]>([]);
   const evacuationEntitiesRef = useRef<any[]>([]);
   const riskZoneEntitiesRef = useRef<any[]>([]);
   // Viewport-based dynamic loading & camera flight guards
   const viewportDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastViewportBboxRef = useRef<string>("");  // Last fetched bbox string for dedup
+  const networkRequestRef = useRef(0);
+  const networkAbortRef = useRef<AbortController | null>(null);
+  const buildingAbortRef = useRef<AbortController | null>(null);
   const isInFlightRef = useRef<boolean>(false);
   const networksLoadedRef = useRef<boolean>(false);
 
@@ -175,6 +181,7 @@ export function CesiumDigitalTwinViewer({
   const [extractedBbox, setExtractedBbox] = useState<BoundingBox | null>(null);
   const [roadFeatures, setRoadFeatures] = useState<RoadFeature[]>([]);
   const [riverFeatures, setRiverFeatures] = useState<RiverFeature[]>([]);
+  const [buildingFeatures, setBuildingFeatures] = useState<BuildingFeature[]>([]);
   const [highRiskZones, setHighRiskZones] = useState<HighRiskZone[]>([]);
   const [evacuationRoute, setEvacuationRoute] = useState<EvacuationRouteResponse | null>(null);
 
@@ -185,6 +192,8 @@ export function CesiumDigitalTwinViewer({
 
   const [searchRadiusKm, setSearchRadiusKm] = useState<number>(5.0);
   const [isExtractingNetworks, setIsExtractingNetworks] = useState<boolean>(false);
+  const [isLoadingBuildings, setIsLoadingBuildings] = useState<boolean>(false);
+  const [osmTileStatus, setOsmTileStatus] = useState<{ loaded: number; total: number; roads: number; rivers: number; buildings: number }>({ loaded: 0, total: 0, roads: 0, rivers: 0, buildings: 0 });
   const [isCalculatingRoute, setIsCalculatingRoute] = useState<boolean>(false);
   const [isPredictingRisk, setIsPredictingRisk] = useState<boolean>(false);
   const [routeAvoidCritical, setRouteAvoidCritical] = useState<boolean>(true);
@@ -204,12 +213,13 @@ export function CesiumDigitalTwinViewer({
   const safeName = (areaName || "default").replace(/\s+/g, "_");
   const storageKey = `dt_mesh_nodes_${safeName}`;
   const activityStorageKey = `dt_user_activity_${safeName}`;
-  // v3: bumped to force re-fetch after water-bodies + clipping fixes
-  const networksStorageKey = `dt_networks_v3_${safeName}`;
+  // v6 invalidates center/viewport data saved by older viewers. Only complete
+  // selected-polygon responses may be restored for an area.
+  const networksStorageKey = `dt_networks_v6_${safeName}_${latitude.toFixed(4)}_${longitude.toFixed(4)}`;
 
   // Purge old v1/v2 cache entries for this area (stale data from old code)
   try {
-    [`dt_networks_${safeName}`, `dt_networks_v2_${safeName}`].forEach(k => {
+    [`dt_networks_${safeName}`, `dt_networks_v2_${safeName}`, `dt_networks_v3_${safeName}`, `dt_networks_v4_${safeName}_${latitude.toFixed(4)}_${longitude.toFixed(4)}`, `dt_networks_v5_${safeName}_${latitude.toFixed(4)}_${longitude.toFixed(4)}`].forEach(k => {
       if (localStorage.getItem(k)) localStorage.removeItem(k);
     });
   } catch (e) {}
@@ -819,6 +829,51 @@ export function CesiumDigitalTwinViewer({
     }
   };
 
+  // ─── 🏢 OSM BUILDING FOOTPRINTS ───
+  // Building geometry is kept in state for the full AOI, while Cesium applies
+  // distance-based visibility so dense areas remain smooth from far away.
+  const render3DBuildings = (buildings: BuildingFeature[]) => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed() || typeof Cesium === "undefined") return;
+
+    viewer.entities.suspendEvents();
+    try {
+      buildingEntitiesRef.current.forEach((entity) => {
+        try { viewer.entities.remove(entity); } catch (e) {}
+      });
+      buildingEntitiesRef.current = [];
+
+      buildings.forEach((building) => {
+        const source = building.geometry?.coordinates;
+        if (!source) return;
+        const polygons = building.geometry.type === "Polygon"
+          ? [source as number[][][]]
+          : source as number[][][][];
+        polygons.forEach((rings) => {
+          const outer = rings[0];
+          if (!outer || outer.length < 4) return;
+          const holes = rings.slice(1).map((ring) => new Cesium.PolygonHierarchy(Cesium.Cartesian3.fromDegreesArray(ring.flat())));
+          const height = Math.max(3, building.properties?.height_m || 6);
+          const entity = viewer.entities.add({
+            name: `🏢 ${building.properties?.name || building.properties?.building || "Building"}`,
+            polygon: {
+              hierarchy: new Cesium.PolygonHierarchy(Cesium.Cartesian3.fromDegreesArray(outer.flat()), holes),
+              material: Cesium.Color.fromCssColorString("#94a3b8").withAlpha(0.55),
+              outline: false,
+              heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+              extrudedHeight: height,
+              extrudedHeightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+              distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 12000),
+            },
+          });
+          buildingEntitiesRef.current.push(entity);
+        });
+      });
+    } finally {
+      viewer.entities.resumeEvents();
+    }
+  };
+
   // ─── 🚨 3D EVACUATION ROUTE RENDERING ───
   const render3DEvacuationRoute = (route: EvacuationRouteResponse | null) => {
     const viewer = viewerRef.current;
@@ -967,14 +1022,27 @@ export function CesiumDigitalTwinViewer({
     }
   };
 
-  // ─── 📡 DATA FETCHING: ROAD & RIVER EXTRACTION (VIEWPORT-AWARE) ───
-  const handleExtractNetworks = async (searchOverride?: string, bboxOverride?: { north: number; south: number; east: number; west: number }) => {
+  // ─── 📡 DATA FETCHING: COMPLETE SELECTED-AREA ROAD & RIVER NETWORK ───
+  const handleExtractNetworks = async (
+    searchOverride?: string,
+    bboxOverride?: { north: number; south: number; east: number; west: number },
+    polygonOverride?: [number, number][],
+  ) => {
+    const requestId = ++networkRequestRef.current;
+    networkAbortRef.current?.abort();
+    buildingAbortRef.current?.abort();
+    const controller = new AbortController();
+    networkAbortRef.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), 25_000);
     setIsExtractingNetworks(true);
     try {
-      // Prefer passed bbox, then camera viewport, then fall back to center+radius
+      // A selected polygon is authoritative. It keeps the network complete for
+      // that area, regardless of where the cinematic camera happens to be.
       const viewportBbox = bboxOverride || getViewportBbox();
 
-      const params: Parameters<typeof extractNetworks>[0] = viewportBbox
+      const params: Parameters<typeof extractNetworks>[0] = polygonOverride
+        ? { polygon: polygonOverride }
+        : viewportBbox
         ? {
             north: viewportBbox.north,
             south: viewportBbox.south,
@@ -988,16 +1056,30 @@ export function CesiumDigitalTwinViewer({
             place_name: searchOverride || areaName || undefined,
           };
 
-      console.log(`[DT] Fetching networks: bbox=${viewportBbox ? `${viewportBbox.south.toFixed(3)},${viewportBbox.west.toFixed(3)} → ${viewportBbox.north.toFixed(3)},${viewportBbox.east.toFixed(3)}` : `center ${latitude},${longitude} r=${searchRadiusKm}km`}`);
+      console.log(`[DT] Fetching complete selected-area network: ${polygonOverride ? `${polygonOverride.length} boundary points` : viewportBbox ? `${viewportBbox.south.toFixed(3)},${viewportBbox.west.toFixed(3)} → ${viewportBbox.north.toFixed(3)},${viewportBbox.east.toFixed(3)}` : `center ${latitude},${longitude} r=${searchRadiusKm}km`}`);
 
-      const res = await extractNetworks(params);
+      const res = await extractNetworks(params, controller.signal);
+
+      // Never let a late response from an older request clear the completed
+      // selected-area scene.
+      if (requestId !== networkRequestRef.current || !viewerRef.current || viewerRef.current.isDestroyed()) {
+        return;
+      }
 
       if (res.status === "success") {
         networksLoadedRef.current = true;
         setExtractedBbox(res.bbox);
         const roads = res.roads.geojson?.features || [];
         const rivers = res.rivers.geojson?.features || [];
-        console.log(`[DT] API returned: ${roads.length} road ways, ${rivers.length} waterway ways`);
+        const tileStatus = res.osm_loading;
+        setOsmTileStatus({
+          loaded: tileStatus?.loaded_tiles ?? 0,
+          total: tileStatus?.total_tiles ?? 0,
+          roads: roads.length,
+          rivers: rivers.length,
+          buildings: 0,
+        });
+        console.log(`[DT] API returned: ${roads.length} road ways, ${rivers.length} waterways`);
 
         setRoadFeatures(roads);
         setRiverFeatures(rivers);
@@ -1020,69 +1102,79 @@ export function CesiumDigitalTwinViewer({
           toast.info("No roads, rivers, or water bodies found in this area from OpenStreetMap");
         }
 
-        // Persist to localStorage so future mounts and viewports skip the API call
-        try {
-          const cacheData = {
-            roads,
-            rivers,
-            bbox: res.bbox,
-            timestamp: Date.now(),
-          };
-          localStorage.setItem(networksStorageKey, JSON.stringify(cacheData));
-          if (bboxOverride) {
-            const bboxKey = `${bboxOverride.south.toFixed(2)},${bboxOverride.west.toFixed(2)},${bboxOverride.north.toFixed(2)},${bboxOverride.east.toFixed(2)}`;
-            localStorage.setItem(`${networksStorageKey}_vp_${bboxKey}`, JSON.stringify(cacheData));
-          }
-        } catch (e) {}
-
         handlePredictRisk(res.bbox);
+        // Building footprint detail is deliberately lower priority: paths and
+        // waterways are visible first, and this request fills in afterward.
+        void loadBuildings(params, requestId, roads, rivers, res.bbox);
       } else {
         toast.error("Network extraction failed — check backend connection");
       }
     } catch (err) {
       console.error("Failed to extract road/river networks:", err);
-      toast.error("Failed to load paths & rivers — backend may be offline");
+      toast.error("OSM data was incomplete — paths and rivers were kept visible while tiles retry");
     } finally {
-      setIsExtractingNetworks(false);
+      window.clearTimeout(timeout);
+      if (requestId === networkRequestRef.current) {
+        setIsExtractingNetworks(false);
+      }
     }
   };
 
-  // ─── 📷 VIEWPORT-BASED DYNAMIC LOADING (DEBOUNCED CAMERA MOVE) ───
-  const scheduleViewportLoad = () => {
+  const loadBuildings = async (
+    params: Parameters<typeof extractBuildings>[0],
+    requestId: number,
+    roads: RoadFeature[],
+    rivers: RiverFeature[],
+    bbox: BoundingBox,
+  ) => {
+    const controller = new AbortController();
+    buildingAbortRef.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), 25_000);
+    setIsLoadingBuildings(true);
+    try {
+      const res = await extractBuildings(params, controller.signal);
+      if (requestId !== networkRequestRef.current || !viewerRef.current || viewerRef.current.isDestroyed()) return;
+      const buildings = res.buildings.geojson?.features || [];
+      setBuildingFeatures(buildings);
+      setOsmTileStatus((current) => ({
+        ...current,
+        buildings: buildings.length,
+      }));
+      render3DBuildings(buildings);
+      try {
+        localStorage.setItem(networksStorageKey, JSON.stringify({
+          roads,
+          rivers,
+          buildings,
+          bbox,
+          timestamp: Date.now(),
+        }));
+      } catch (e) {}
+    } catch (err) {
+      console.error("Failed to extract building footprints:", err);
+      toast.warning("Paths and waterways are ready; building detail is still unavailable");
+    } finally {
+      window.clearTimeout(timeout);
+      if (requestId === networkRequestRef.current) setIsLoadingBuildings(false);
+    }
+  };
+
+  // ─── 📐 SELECTED-AREA NETWORK LOADING ───
+  // Load exactly once after the intro flight. The old viewport loader started
+  // several overlapping requests and repeatedly replaced the network mid-load.
+  const scheduleSelectedAreaLoad = () => {
     if (isInFlightRef.current) return;
     if (viewportDebounceRef.current) clearTimeout(viewportDebounceRef.current);
     viewportDebounceRef.current = setTimeout(() => {
       if (isInFlightRef.current) return;
-      const bbox = getViewportBbox();
-      if (!bbox) return;  // Too zoomed out — skip
-
-      // Dedup: only fetch if bbox changed meaningfully (> 0.02 deg)
-      const bboxKey = `${bbox.south.toFixed(2)},${bbox.west.toFixed(2)},${bbox.north.toFixed(2)},${bbox.east.toFixed(2)}`;
-      if (bboxKey === lastViewportBboxRef.current) return;
-
-      // Check localStorage cache for this viewport
-      const cacheKey = `${networksStorageKey}_vp_${bboxKey}`;
-      try {
-        const raw = localStorage.getItem(cacheKey);
-        if (raw) {
-          const cached = JSON.parse(raw);
-          const ageMs = Date.now() - (cached.timestamp || 0);
-          const MAX_AGE_MS = 6 * 60 * 60 * 1000; // 6 hours for viewport cache
-          if (ageMs < MAX_AGE_MS && Array.isArray(cached.roads) && Array.isArray(cached.rivers)) {
-            console.log(`[DT] Viewport cache hit: ${cached.roads.length} roads, ${cached.rivers.length} rivers`);
-            setRoadFeatures(cached.roads);
-            setRiverFeatures(cached.rivers);
-            render3DRoads(cached.roads, showRoads);
-            render3DRivers(cached.rivers, showRivers);
-            lastViewportBboxRef.current = bboxKey;
-            return;
-          }
-        }
-      } catch (e) {}
-
-      lastViewportBboxRef.current = bboxKey;
-      handleExtractNetworks(undefined, bbox);
-    }, 1500);
+      const selectedPolygon = getActivePolygon();
+      const areaKey = selectedPolygon
+        .map(([lat, lng]) => `${lat.toFixed(5)},${lng.toFixed(5)}`)
+        .join(";");
+      if (areaKey === lastViewportBboxRef.current) return;
+      lastViewportBboxRef.current = areaKey;
+      handleExtractNetworks(undefined, undefined, selectedPolygon);
+    }, 200);
   };
 
   const handlePredictRisk = async (bbox?: BoundingBox | null) => {
@@ -1700,9 +1792,11 @@ export function CesiumDigitalTwinViewer({
               easingFunction: Cesium.EasingFunction.QUADRATIC_OUT,
               complete: () => {
                 isInFlightRef.current = false;
+                scheduleSelectedAreaLoad();
               },
               cancel: () => {
                 isInFlightRef.current = false;
+                scheduleSelectedAreaLoad();
               },
             });
           },
@@ -1983,11 +2077,6 @@ export function CesiumDigitalTwinViewer({
 
         sampleGroundElevation(longitude, latitude);
 
-        // Attach viewport-based loader — fires 900ms after camera stops moving
-        viewer.camera.moveEnd.addEventListener(() => {
-          scheduleViewportLoad();
-        });
-
         setLoading(false);
       } catch (err: any) {
         console.error("Initialization error:", err);
@@ -2217,16 +2306,22 @@ export function CesiumDigitalTwinViewer({
             const cached = JSON.parse(raw);
             const ageMs = Date.now() - (cached.timestamp || 0);
             const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
-            const hasData = Array.isArray(cached.roads) && Array.isArray(cached.rivers);
+            const hasData = Array.isArray(cached.roads) && Array.isArray(cached.rivers) && Array.isArray(cached.buildings);
             if (ageMs < MAX_AGE_MS && hasData) {
               // Use cached data — skip API call
               console.log(`[DT] Using cached networks: ${cached.roads.length} roads, ${cached.rivers.length} rivers`);
               networksLoadedRef.current = true;
               setRoadFeatures(cached.roads);
               setRiverFeatures(cached.rivers);
+              setBuildingFeatures(cached.buildings);
+              setOsmTileStatus({ loaded: 0, total: 0, roads: cached.roads.length, rivers: cached.rivers.length, buildings: cached.buildings.length });
               if (cached.bbox) setExtractedBbox(cached.bbox);
               render3DRoads(cached.roads, showRoads);
               render3DRivers(cached.rivers, showRivers);
+              render3DBuildings(cached.buildings);
+              lastViewportBboxRef.current = getActivePolygon()
+                .map(([areaLat, areaLng]) => `${areaLat.toFixed(5)},${areaLng.toFixed(5)}`)
+                .join(";");
               if (cached.bbox) handlePredictRisk(cached.bbox);
               return;
             }
@@ -2234,9 +2329,9 @@ export function CesiumDigitalTwinViewer({
             localStorage.removeItem(networksStorageKey);
           }
         } catch (e) {}
-        // No valid cache — fetch from API
-        console.log(`[DT] Fetching networks from API for ${areaName} (${latitude}, ${longitude}) radius=${searchRadiusKm}km`);
-        handleExtractNetworks();
+        // The intro flight is still in progress. Its completion handler starts
+        // the one selected-area request, avoiding a competing center-radius
+        // request here.
       }, 800);
       return () => clearTimeout(timer);
     }
@@ -2924,6 +3019,24 @@ export function CesiumDigitalTwinViewer({
                 <span className="font-mono text-slate-300 text-[10px]">
                   {latitude.toFixed(4)}°N, {longitude.toFixed(4)}°E
                 </span>
+              </div>
+
+              <div className="bg-slate-900/60 px-2 py-1.5 rounded border border-slate-800/80">
+                <div className="flex items-center justify-between text-[10px] text-slate-400">
+                  <span>{isExtractingNetworks ? "Loading priority OSM data…" : isLoadingBuildings ? "Loading building detail…" : "OSM data complete"}</span>
+                  <span className="text-sky-300 font-mono">
+                    {isExtractingNetworks || isLoadingBuildings ? "Fetching tiles" : osmTileStatus.total ? `${osmTileStatus.loaded}/${osmTileStatus.total} tiles` : "Cached"}
+                  </span>
+                </div>
+                <div className="mt-1 h-1 rounded bg-slate-800 overflow-hidden">
+                  <div
+                    className="h-full bg-sky-400 transition-all duration-300"
+                    style={{ width: `${isExtractingNetworks ? 35 : isLoadingBuildings ? 75 : osmTileStatus.total ? Math.round((osmTileStatus.loaded / osmTileStatus.total) * 100) : 100}%` }}
+                  />
+                </div>
+                <div className="mt-1 text-[9px] text-slate-500">
+                  Buildings: {osmTileStatus.buildings} · Paths: {osmTileStatus.roads} · Waterways: {osmTileStatus.rivers}
+                </div>
               </div>
 
               {/* Radius selector */}

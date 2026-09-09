@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from services.location_service import bbox_from_radius, bbox_from_polygon, geocode_place_name
 from services.osm_road_service import OSMRoadService
 from services.osm_river_service import OSMRiverService
+from services.osm_building_service import OSMBuildingService
+from services.osm_tile_loader import OSMTileLoadError, OSMTileLoader
 from services.graph_builder import UnifiedGraphBuilder
 from services.routing_service import EvacuationRoutingService
 
@@ -15,6 +17,7 @@ router = APIRouter(prefix="/geo", tags=["geo-routing-rivers"])
 
 road_service = OSMRoadService()
 river_service = OSMRiverService()
+building_service = OSMBuildingService()
 graph_builder = UnifiedGraphBuilder()
 routing_service = EvacuationRoutingService()
 
@@ -118,11 +121,21 @@ async def extract_networks(payload: LocationRequest = Body(...)):
     east = bbox["east"]
     west = bbox["west"]
 
-    # Extract Road network and River network in parallel
-    (road_G, road_geojson), (river_G, river_geojson) = await asyncio.gather(
-        road_service.get_road_network(north, south, east, west, polygon=payload.polygon),
-        river_service.get_river_network(north, south, east, west, polygon=payload.polygon),
-    )
+    # All datasets use the same bounded tile queue. Do not render a success
+    # response when a tile has failed: a missing road or river is unsafe here.
+    try:
+        (road_G, road_geojson), (river_G, river_geojson) = await asyncio.gather(
+            road_service.get_road_network(north, south, east, west, polygon=payload.polygon),
+            river_service.get_river_network(north, south, east, west, polygon=payload.polygon),
+        )
+    except OSMTileLoadError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "OSM data is incomplete; no partial map was displayed.",
+                "failed_tiles": exc.failures,
+            },
+        ) from exc
 
     center_lat = bbox.get("center_lat", (north + south) / 2.0)
     center_lng = bbox.get("center_lng", (east + west) / 2.0)
@@ -130,6 +143,15 @@ async def extract_networks(payload: LocationRequest = Body(...)):
     return {
         "status": "success",
         "bbox": bbox,
+        "osm_loading": {
+            "complete": True,
+            "total_tiles": len(OSMTileLoader.tiles_for_bbox(north, south, east, west)),
+            "loaded_tiles": len(OSMTileLoader.tiles_for_bbox(north, south, east, west)),
+            "failed_tiles": [],
+            # Buildings load on their own lower-priority request. This lets
+            # flood-critical waterways and evacuation paths appear first.
+            "buildings": {"state": "pending"},
+        },
         "roads": {
             "geojson": road_geojson,
             "total_nodes": road_G.number_of_nodes(),
@@ -140,6 +162,27 @@ async def extract_networks(payload: LocationRequest = Body(...)):
             "total_nodes": river_G.number_of_nodes(),
             "total_edges": river_G.number_of_edges(),
         },
+    }
+
+
+@router.post("/extract-buildings")
+async def extract_buildings(payload: LocationRequest = Body(...)):
+    """Load complete OSM building footprints after the priority network layers."""
+    bbox = _derive_bbox(payload)
+    try:
+        geojson, tile_status = await building_service.get_buildings(
+            bbox["north"], bbox["south"], bbox["east"], bbox["west"], polygon=payload.polygon
+        )
+    except OSMTileLoadError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"message": "Building data is incomplete.", "failed_tiles": exc.failures},
+        ) from exc
+    return {
+        "status": "success",
+        "bbox": bbox,
+        "buildings": {"geojson": geojson, "total_features": len(geojson.get("features", []))},
+        "osm_loading": tile_status,
     }
 
 
