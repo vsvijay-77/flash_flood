@@ -83,6 +83,8 @@ export interface GISMapProps {
   rainActive?: boolean;
   onToggleRain?: (active: boolean) => void;
   rainfallIntensity?: number;
+  /** When true, the map is locked to the selected/focused area only — no India-wide view, no other areas rendered, no draw/search tools */
+  singleAreaMode?: boolean;
 }
 
 /**
@@ -105,6 +107,7 @@ export default function GISMap({
   rainActive,
   onToggleRain,
   rainfallIntensity = 75,
+  singleAreaMode = false,
 }: GISMapProps) {
   const holder = useRef<HTMLDivElement | null>(null);
   const map = useRef<L.Map | null>(null);
@@ -379,14 +382,48 @@ export default function GISMap({
   const polygonFill = useRef<L.Polygon | null>(null);
   const [mapInstance, setMapInstance] = useState<L.Map | null>(null);
 
-  // ─── Map init: Full India by default, strictly bounded inside India ──────────
+  // ─── Map init: area-locked in singleAreaMode, Full India by default ──────────
   useEffect(() => {
     if (!holder.current || map.current) return;
+
+    // In singleAreaMode, compute tight bounds from the focused/selected area polygon
+    const areaForInit = focusedArea || selectedArea;
+    let initCenter: [number, number] = INDIA_CENTER;
+    let initZoom = INDIA_DEFAULT_ZOOM;
+    let initMaxBounds: L.LatLngBoundsLiteral = INDIA_BOUNDS;
+    let initMinZoom = INDIA_MIN_ZOOM;
+
+    if (singleAreaMode && areaForInit) {
+      const coords =
+        areaForInit.polygon && areaForInit.polygon.length >= 3
+          ? areaForInit.polygon
+          : parseCustomAreaPolygon(areaForInit.shape, Number(areaForInit.lat), Number(areaForInit.lng));
+      if (coords.length >= 3) {
+        const lats = coords.map(([la]) => la);
+        const lngs = coords.map(([, lo]) => lo);
+        const pad = 0.01; // ~1km padding around the area
+        initMaxBounds = [
+          [Math.min(...lats) - pad, Math.min(...lngs) - pad],
+          [Math.max(...lats) + pad, Math.max(...lngs) + pad],
+        ];
+        initCenter = [
+          (Math.min(...lats) + Math.max(...lats)) / 2,
+          (Math.min(...lngs) + Math.max(...lngs)) / 2,
+        ];
+        initZoom = 15;
+        initMinZoom = 13;
+      } else if (areaForInit.lat && areaForInit.lng) {
+        initCenter = [Number(areaForInit.lat), Number(areaForInit.lng)];
+        initZoom = 15;
+        initMinZoom = 13;
+      }
+    }
+
     const instance = L.map(holder.current, {
-      center: INDIA_CENTER,
-      zoom: INDIA_DEFAULT_ZOOM,
-      minZoom: INDIA_MIN_ZOOM,
-      maxBounds: INDIA_BOUNDS,
+      center: initCenter,
+      zoom: initZoom,
+      minZoom: initMinZoom,
+      maxBounds: initMaxBounds,
       maxBoundsViscosity: 1.0,
       zoomControl: false,
       attributionControl: false,
@@ -397,6 +434,18 @@ export default function GISMap({
     overlay.current = L.layerGroup().addTo(instance);
     drawLayer.current = L.layerGroup().addTo(instance);
     searchLayer.current = L.layerGroup().addTo(instance);
+
+    // In singleAreaMode, immediately fit to the area's polygon bounds
+    if (singleAreaMode && areaForInit) {
+      const coords =
+        areaForInit.polygon && areaForInit.polygon.length >= 3
+          ? areaForInit.polygon
+          : parseCustomAreaPolygon(areaForInit.shape, Number(areaForInit.lat), Number(areaForInit.lng));
+      if (coords.length >= 3) {
+        const bounds = L.latLngBounds(coords.map((c) => L.latLng(c[0], c[1])));
+        instance.fitBounds(bounds, { padding: [20, 20], maxZoom: 18 });
+      }
+    }
 
     return () => {
       instance.remove();
@@ -944,7 +993,11 @@ export default function GISMap({
 
 
     if (layers.customAreas) {
-      customAreas.forEach((area) => {
+      // In singleAreaMode, only render the selected/focused area — skip all others
+      const areasToRender = singleAreaMode
+        ? customAreas.filter((a) => a.id === (focusedArea?.id || selectedArea?.id))
+        : customAreas;
+      areasToRender.forEach((area) => {
         const coords =
           area.polygon && area.polygon.length >= 3
             ? area.polygon
@@ -1081,7 +1134,8 @@ export default function GISMap({
       />
 
 
-      {/* 🔍 Floating Location & Area Search Bar Overlay */}
+      {/* 🔍 Floating Location & Area Search Bar Overlay — hidden in singleAreaMode */}
+      {!singleAreaMode && (
       <div className="absolute top-3 left-3 z-[1000] w-72 sm:w-80 pointer-events-auto">
         <div className="relative flex items-center bg-white/95 backdrop-blur-md border border-slate-300 rounded-xl shadow-xl transition-all focus-within:ring-2 focus-within:ring-[#0F4C81] focus-within:border-[#0F4C81]">
           <Search className="size-4 text-slate-400 ml-3 shrink-0" />
@@ -1148,6 +1202,7 @@ export default function GISMap({
           </div>
         )}
       </div>
+      )}
 
       {/* Map Control Buttons: always visible */}
       <div className="absolute top-3 right-3 z-[1000] flex flex-col gap-2">
@@ -1174,7 +1229,8 @@ export default function GISMap({
           )}
         </button>
 
-        {/* Draw Area Button — always visible inside map */}
+        {/* Draw Area Button — hidden in singleAreaMode */}
+        {!singleAreaMode && (
         <button
           onClick={() => toggleDraw()}
           className={`flex items-center gap-1.5 font-semibold text-xs px-3 py-1.5 rounded-md shadow-md border backdrop-blur-sm transition-all hover:shadow-lg active:scale-95 cursor-pointer ${
@@ -1187,6 +1243,7 @@ export default function GISMap({
           <Ruler className="size-3.5" />
           <span>{isDrawActive ? "Cancel Draw" : "Draw Area"}</span>
         </button>
+        )}
       </div>
 
       {/* ─── Monitored Area Details Tab (100% Consistent in Fullscreen & Normal Mode) ─── */}

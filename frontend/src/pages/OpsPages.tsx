@@ -413,6 +413,7 @@ export function DigitalTwinPage() {
                   boundaries: true,
                   rainSimulation: isRainActive,
                 }}
+                singleAreaMode={true}
                 height="620px"
                 testId="twin-gis-map"
               />
